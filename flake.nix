@@ -1,9 +1,9 @@
 {
   description = "hydrometer: resource monitoring and job attribution for a Hydra build farm";
 
-  # hkm/v2-slice-sharing: the v2 (per-component slice) builder with dependency
-  # slices shared across projects.
-  inputs.haskellNix.url = "github:hamishmack/haskell.nix/hkm/v2-slice-sharing";
+  # haskell.nix master: the v2 (per-component slice) builder with dependency
+  # slices shared across projects (input-output-hk/haskell.nix#2606).
+  inputs.haskellNix.url = "github:input-output-hk/haskell.nix";
   inputs.nixpkgs.follows = "haskellNix/nixpkgs-unstable";
   inputs.flake-utils.url = "github:numtide/flake-utils";
 
