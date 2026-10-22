@@ -42,7 +42,7 @@ import Data.Time (NominalDiffTime, UTCTime, getCurrentTime)
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime, utcTimeToPOSIXSeconds)
 import Data.Time.Format (defaultTimeLocale, formatTime)
 import GHCJS.DOM.Types (MonadJSM, liftJSM)
-import Language.Javascript.JSaddle (JSNull (..), jsg, (#), (!), valToText)
+import Language.Javascript.JSaddle (eval, JSNull (..), jsg, (#), valToText)
 import Numeric (showFFloat)
 import Reflex.Dom.Core
 
