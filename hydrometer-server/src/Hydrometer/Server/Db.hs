@@ -84,7 +84,10 @@ viewsSql = $(embedFile "sql/views.sql")
 -- | Apply outstanding numbered migrations, then (re)create the views.
 migrate :: Db -> IO ()
 migrate d = withConn d $ \c -> do
-  void $ execute_ c "CREATE SCHEMA IF NOT EXISTS hydrometer"
+  -- CREATE SCHEMA IF NOT EXISTS needs CREATE on the database even when the
+  -- schema exists; deployments create it for us (see nix/nixos.nix).
+  [Only haveSchema] <- query_ c "SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'hydrometer')"
+  unless haveSchema $ void $ execute_ c "CREATE SCHEMA hydrometer"
   void $ execute_ c "CREATE TABLE IF NOT EXISTS hydrometer.schema_version (version int PRIMARY KEY, applied timestamptz NOT NULL DEFAULT now())"
   applied <- map fromOnly <$> query_ c "SELECT version FROM hydrometer.schema_version" :: IO [Int]
   forM_ (sortOn fst migrations) $ \(v, sql) -> unless (v `elem` applied) $
