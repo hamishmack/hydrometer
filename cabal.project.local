@@ -1,0 +1,2 @@
+with-build-compiler: /nix/store/xjc2d1fq6yi3gqjvi0bymrv7qyx88rzz-ghc914-sh-compiler/bin/ghc
+with-build-hc-pkg: /nix/store/xjc2d1fq6yi3gqjvi0bymrv7qyx88rzz-ghc914-sh-compiler/bin/ghc-pkg

@@ -99,13 +99,14 @@ ingest :: Db -> Text -> Text -> SamplesResponse -> IO ()
 ingest d machine agentUrl sr = withTx d $ \c -> do
   let info = srAgent sr
   void $ execute c
-    "INSERT INTO hydrometer.machines (name, os, os_version, cpu_count, mem_total, agent_url, agent_version, agent_start, boot_time) \
-    \VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
+    "INSERT INTO hydrometer.machines (name, os, os_version, cpu_count, mem_total, agent_url, agent_version, agent_start, boot_time, builders) \
+    \VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
     \ON CONFLICT (name) DO UPDATE SET os = excluded.os, os_version = excluded.os_version, cpu_count = excluded.cpu_count, \
     \mem_total = excluded.mem_total, agent_url = excluded.agent_url, agent_version = excluded.agent_version, \
-    \agent_start = excluded.agent_start, boot_time = excluded.boot_time"
+    \agent_start = excluded.agent_start, boot_time = excluded.boot_time, \
+    \builders = CASE WHEN excluded.builders = '[]'::jsonb THEN machines.builders ELSE excluded.builders END"
     ( machine, aOs info, aOsVersion info, aCpuCount info, aMemTotal info, agentUrl, aAgentVersion info
-    , fromEpochMs (aStartTime info), fromEpochMs (aBootTime info) )
+    , fromEpochMs (aStartTime info), fromEpochMs (aBootTime info), A.toJSON (aBuilders info) )
   forM_ (srSamples sr) $ \s -> do
     let t = fromEpochMs (sTime s)
         h = sHost s

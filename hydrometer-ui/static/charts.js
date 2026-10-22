@@ -52,11 +52,11 @@
     };
     chart(el).setOption({
       backgroundColor: "transparent", animation: false,
-      grid: { left: 60, right: o.unit2 ? 60 : 20, top: 30, bottom: 30 },
+      grid: { left: 60, right: o.unit2 !== undefined ? 60 : 20, top: 30, bottom: 30 },
       legend: { top: 4, type: "scroll" },
       tooltip: { trigger: "axis", valueFormatter: fmt(o.unit) },
       xAxis: { type: "time" },
-      yAxis: o.unit2 ? [axis(o.unit, o.yMax), axis(o.unit2)] : axis(o.unit, o.yMax),
+      yAxis: o.unit2 !== undefined ? [axis(o.unit, o.yMax), axis(o.unit2)] : axis(o.unit, o.yMax),
       series: series
     }, true);
   }

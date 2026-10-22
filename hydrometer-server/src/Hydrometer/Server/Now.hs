@@ -69,9 +69,9 @@ buildNow c agentsVar queueVar = do
         ++ [ Alert "warning" ("Agent on " <> n <> " is not answering: " <> T.take 200 e)
            | (n, a) <- M.toList agents, Just e <- [asError a] ]
         ++ [ Alert "warning" (mName m <> " is using " <> pct o mx <> " of its file descriptors (kern.maxfiles)")
-           | m <- machines, Just o <- [mOpenFiles m], Just mx <- [mMaxFiles m], mx > 0, o * 10 > mx * 8 ]
+           | m <- machines, Just o <- [mOpenFiles m], Just mx <- [mMaxFiles m], mx > 0, fromIntegral o > (0.8 :: Double) * fromIntegral mx ]
         ++ [ Alert "warning" (mName m <> " has only " <> pct f t <> " of its nix store disk free")
-           | m <- machines, Just f <- [mStoreFree m], Just t <- [mStoreTotal m], t > 0, f * 10 < t ]
+           | m <- machines, Just f <- [mStoreFree m], Just t <- [mStoreTotal m], t > 0, fromIntegral f < (0.1 :: Double) * fromIntegral t ]
         ++ [ Alert "warning" (mName m <> " is under memory pressure (" <> T.pack (show (round p :: Int)) <> ")")
            | m <- machines, Just p <- [mMemPressure m], p >= 50 ]
       pct a b = T.pack (show (a * 100 `div` max 1 b)) <> "%"

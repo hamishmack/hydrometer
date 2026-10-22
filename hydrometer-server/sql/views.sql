@@ -159,37 +159,50 @@ FROM hydrometer.host_minute;
 COMMENT ON VIEW hydrometer.v_machine_minute IS 'Per-machine per-minute rollup (kept a year): cpu_util 0..1, peak memory, rates in bytes/second, runs_max = most concurrent builds seen.';
 
 CREATE VIEW hydrometer.v_bottleneck_minute AS
-WITH status AS (
-  SELECT machine, date_trunc('minute', t) AS t,
-         max(max_jobs) AS max_jobs, max(current_jobs) AS current_jobs,
-         bool_or(disabled) AS disabled, max(systems) AS systems
-  FROM hydrometer.machine_status_samples
-  GROUP BY 1, 2
+WITH builder AS (
+  SELECT m.name AS machine, b.ord AS builder, (b.value->>'maxJobs')::int AS max_jobs,
+         ARRAY(SELECT jsonb_array_elements_text(b.value->'systems')) AS systems
+  FROM hydrometer.machines m,
+       jsonb_array_elements(coalesce(m.builders, '[]'::jsonb)) WITH ORDINALITY AS b(value, ord)
+), runs_min AS (
+  -- Most builds running at once per machine, minute and system.
+  SELECT machine, t, system, max(n) AS n FROM (
+    SELECT r.machine, date_trunc('minute', rs.t) AS t, rs.t AS st, r.system, count(*) AS n
+    FROM hydrometer.run_samples rs JOIN hydrometer.runs r ON r.id = rs.run_id
+    WHERE r.kind <> 'eval' GROUP BY 1, 2, 3, 4) x
+  GROUP BY 1, 2, 3
 ), queue AS (
   SELECT date_trunc('minute', t) AS t, system, max(runnable) AS runnable
-  FROM hydrometer.queue_samples
-  GROUP BY 1, 2
+  FROM hydrometer.queue_samples GROUP BY 1, 2
+), per_builder AS (
+  SELECT m.machine, m.t, b.builder, b.max_jobs,
+    coalesce((SELECT sum(n) FROM runs_min rm
+              WHERE rm.machine = m.machine AND rm.t = m.t AND rm.system = ANY (b.systems)), 0) AS busy,
+    coalesce((SELECT sum(runnable) FROM queue q
+              WHERE q.t = m.t AND q.system = ANY (b.systems)), 0) AS runnable
+  FROM hydrometer.v_machine_minute m JOIN builder b ON b.machine = m.machine
+), agg AS (
+  SELECT machine, t, sum(busy) AS builds, sum(max_jobs) AS slots, sum(runnable) AS runnable,
+    bool_or(busy >= max_jobs AND runnable > 0) AS full_with_work,
+    bool_or(busy < max_jobs AND runnable > 0) AS free_with_work
+  FROM per_builder GROUP BY 1, 2
 )
 SELECT
-  m.machine, m.t, m.cpu_util, m.mem_pressure_max, m.pageouts,
-  m.net_rx_rate, m.runs_max, st.current_jobs, st.max_jobs,
-  (SELECT coalesce(sum(q.runnable), 0) FROM queue q WHERE q.t = m.t AND q.system = ANY (st.systems)) AS runnable,
+  m.machine, m.t, m.cpu_util, m.mem_pressure_max, m.pageouts, m.net_rx_rate,
+  coalesce(a.builds, m.runs_max) AS builds, a.slots, a.runnable,
   CASE
-    WHEN st.disabled THEN 'disabled'
     WHEN m.cpu_util >= 0.85 THEN 'cpu'
     WHEN m.mem_pressure_max >= 50 OR m.pageouts > 2000 THEN 'memory'
     WHEN m.net_rx_rate >= 80e6 THEN 'network'
-    WHEN coalesce(st.current_jobs, m.runs_max, 0) = 0
-         AND (SELECT coalesce(sum(q.runnable), 0) FROM queue q WHERE q.t = m.t AND q.system = ANY (st.systems)) = 0 THEN 'idle'
-    WHEN coalesce(st.current_jobs, 0) < coalesce(st.max_jobs, 0)
-         AND (SELECT coalesce(sum(q.runnable), 0) FROM queue q WHERE q.t = m.t AND q.system = ANY (st.systems)) > 0 THEN 'scheduler'
-    WHEN coalesce(st.current_jobs, 0) >= coalesce(st.max_jobs, 1) THEN 'slots'
+    WHEN a.full_with_work THEN 'slots'
+    WHEN a.free_with_work THEN 'scheduler'
+    WHEN coalesce(a.builds, m.runs_max, 0) = 0 THEN 'idle'
     ELSE 'starved'
   END AS bottleneck
 FROM hydrometer.v_machine_minute m
-LEFT JOIN status st ON st.machine = m.machine AND st.t = m.t;
+LEFT JOIN agg a ON a.machine = m.machine AND a.t = m.t;
 COMMENT ON VIEW hydrometer.v_bottleneck_minute IS
-  'What limited each machine in each minute. bottleneck: cpu (>=85% of cores busy), memory (pressure >= 50 or heavy paging), network (>= 80 MB/s in), slots (every job slot busy but the hardware is not saturated: more slots or bigger VMs would help), scheduler (free slots while steps for its systems are runnable: the queue runner is not dispatching), starved (slots free, nothing runnable: waiting on dependencies elsewhere), idle, disabled. Thresholds are deliberately simple; inspect the numeric columns too.';
+  'What limited each machine in each minute. bottleneck: cpu (>=85% of cores busy), memory (pressure >= 50 or heavy paging), network (>= 80 MB/s in), slots (a builder on the machine has every slot busy while steps for its systems are runnable, without saturating the hardware: more slots or bigger VMs would help), scheduler (a builder has free slots while steps for its systems are runnable: the queue runner is not dispatching), starved (nothing runnable for it: waiting on dependencies built elsewhere), idle. Slots come from the agents (hydrometer.machines.builders, one entry per hydra builder: a Mac has a darwin and a linux one); builds counts concurrent agent runs. Thresholds are deliberately simple; check the numeric columns.';
 
 CREATE VIEW hydrometer.v_eval_progress AS
 SELECT

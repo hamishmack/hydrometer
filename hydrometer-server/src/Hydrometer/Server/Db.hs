@@ -76,6 +76,7 @@ withTx d act = withConn d (\c -> withTransaction c (act c))
 migrations :: [(Int, ByteString)]
 migrations =
   [ (1, $(embedFile "sql/001_init.sql"))
+  , (2, $(embedFile "sql/002_builders.sql"))
   ]
 
 viewsSql :: ByteString
