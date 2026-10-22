@@ -11,7 +11,9 @@ in {
   options.services.hydrometer-agent = {
     enable = mkEnableOption "the hydrometer agent";
     name = mkOption { type = types.str; description = "This machine's name as hydra knows it (e.g. aarch64-darwin-6)."; };
-    listen = mkOption { type = types.str; default = "*:9184"; };
+    # IPv4 only: the server pulls over the LAN, and the builders also have
+    # public IPv6 addresses.
+    listen = mkOption { type = types.str; default = "0.0.0.0:9184"; };
     interval = mkOption { type = types.int; default = 5; description = "Seconds between samples."; };
   };
   config = mkIf cfg.enable {
