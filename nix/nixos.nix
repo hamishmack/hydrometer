@@ -24,6 +24,10 @@ let
     exec ${packages.hydrometer}/bin/hydrometer "$cmd" --config ${configFile} "$@"
   '';
   hydraTables = [ "builds" "buildsteps" "buildstepoutputs" "jobsets" "jobsetevals" "jobsetevalmembers" "projects" ];
+  # Where database setup SQL runs, and how it reaches psql (see below).
+  separateSetup = lib.versionAtLeast config.system.nixos.release "26.05";
+  setupUnit = if separateSetup then "postgresql-setup" else "postgresql";
+  psql = if separateSetup then "psql" else "$PSQL";
 in {
   options.services.hydrometer = {
     enable = mkEnableOption "the hydrometer server";
@@ -68,19 +72,23 @@ in {
       services.postgresql.authentication = lib.mkBefore ''
         local ${cfg.database} hydrometer,hydrometer_ro peer map=hydrometer
       '';
-      systemd.services.postgresql.postStart = lib.mkAfter ''
-        $PSQL -d ${cfg.database} -tAc 'CREATE SCHEMA IF NOT EXISTS hydrometer AUTHORIZATION hydrometer'
-        $PSQL -d ${cfg.database} -tAc 'GRANT SELECT ON ${lib.concatStringsSep ", " hydraTables} TO hydrometer, hydrometer_ro'
-        $PSQL -d ${cfg.database} -tAc 'GRANT USAGE ON SCHEMA hydrometer TO hydrometer_ro'
-        $PSQL -d ${cfg.database} -tAc 'ALTER DEFAULT PRIVILEGES FOR ROLE hydrometer IN SCHEMA hydrometer GRANT SELECT ON TABLES TO hydrometer_ro'
-        $PSQL -d ${cfg.database} -tAc 'GRANT SELECT ON ALL TABLES IN SCHEMA hydrometer TO hydrometer_ro'
+      # NixOS 26.05 runs ensureUsers in postgresql-setup and no longer sets
+      # $PSQL in postgresql.service; a failing ExecStartPost there would stop
+      # the database server.  Earlier releases only have postgresql.service.
+      systemd.services.${setupUnit}.postStart = lib.mkAfter ''
+        ${psql} -d ${cfg.database} -tAc 'CREATE SCHEMA IF NOT EXISTS hydrometer AUTHORIZATION hydrometer'
+        ${psql} -d ${cfg.database} -tAc 'GRANT SELECT ON ${lib.concatStringsSep ", " hydraTables} TO hydrometer, hydrometer_ro'
+        ${psql} -d ${cfg.database} -tAc 'GRANT USAGE ON SCHEMA hydrometer TO hydrometer_ro'
+        ${psql} -d ${cfg.database} -tAc 'ALTER DEFAULT PRIVILEGES FOR ROLE hydrometer IN SCHEMA hydrometer GRANT SELECT ON TABLES TO hydrometer_ro'
+        ${psql} -d ${cfg.database} -tAc 'GRANT SELECT ON ALL TABLES IN SCHEMA hydrometer TO hydrometer_ro'
       '';
 
       systemd.services.hydrometer = {
         description = "hydrometer collector and API";
         wantedBy = [ "multi-user.target" ];
-        after = [ "postgresql.service" "network-online.target" ];
-        requires = [ "postgresql.service" ];
+        # After the setup unit: that is where the roles and schema are made.
+        after = [ "${setupUnit}.service" "network-online.target" ];
+        requires = [ "${setupUnit}.service" ];
         wants = [ "network-online.target" ];
         serviceConfig = {
           User = "hydrometer";
