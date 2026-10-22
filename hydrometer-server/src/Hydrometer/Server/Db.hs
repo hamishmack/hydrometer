@@ -120,7 +120,7 @@ queryTable c q p = do
 queryTableReadOnly :: Connection -> Int -> Int -> Text -> IO Table
 queryTableReadOnly c timeoutMs maxRows sql = withTransaction c $ do
   void $ execute_ c "SET TRANSACTION READ ONLY"
-  void $ execute c "SELECT set_config('statement_timeout', ?, true)" (Only (show timeoutMs))
+  _ <- query c "SELECT set_config('statement_timeout', ?, true)" (Only (show timeoutMs)) :: IO [Only Text]
   let body = T.dropWhileEnd (\ch -> ch == ';' || ch == ' ' || ch == '\n') (T.strip sql)
   t <- tableFromSql c (T.encodeUtf8 ("SELECT * FROM (" <> body <> "\n) _q LIMIT " <> T.pack (show maxRows)))
   pure t
