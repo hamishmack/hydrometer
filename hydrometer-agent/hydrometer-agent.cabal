@@ -1,0 +1,61 @@
+cabal-version:      3.4
+name:               hydrometer-agent
+version:            0.1.0.0
+synopsis:           Per-host sampler for hydrometer (macOS and Linux)
+license:            Apache-2.0
+license-file:       LICENSE
+author:             Hamish Mackenzie
+maintainer:         Hamish.K.Mackenzie@gmail.com
+category:           System
+build-type:         Simple
+
+common warnings
+  ghc-options:        -Wall
+  default-language:   GHC2021
+  default-extensions: LambdaCase OverloadedStrings DerivingStrategies
+
+library
+  import:           warnings
+  hs-source-dirs:   src
+  exposed-modules:  Hydrometer.Agent.Attribution
+                    Hydrometer.Agent.Main
+                    Hydrometer.Agent.Platform
+                    Hydrometer.Agent.Sampler
+                    Hydrometer.Agent.Sys
+  build-depends:    base >=4.18 && <5
+                  , aeson >=2.1
+                  , bytestring
+                  , containers
+                  , hostname
+                  , http-types
+                  , process
+                  , stm
+                  , text
+                  , time
+                  , unix
+                  , wai
+                  , warp
+                  , hydrometer-core
+  if os(darwin)
+    exposed-modules: Hydrometer.Agent.Darwin
+                     Hydrometer.Agent.NetTop
+    c-sources:       cbits/darwin.c
+    frameworks:      IOKit CoreFoundation
+  else
+    exposed-modules: Hydrometer.Agent.Linux
+    c-sources:       cbits/linux.c
+    build-depends:   directory
+
+executable hydrometer-agent
+  import:           warnings
+  main-is:          Main.hs
+  hs-source-dirs:   app
+  build-depends:    base, hydrometer-agent
+  ghc-options:      -threaded -rtsopts "-with-rtsopts=-N2 -A16m -I0"
+
+test-suite hydrometer-agent-test
+  import:           warnings
+  type:             exitcode-stdio-1.0
+  main-is:          Main.hs
+  hs-source-dirs:   test
+  build-depends:    base, aeson, bytestring, containers, text, hydrometer-agent, hydrometer-core

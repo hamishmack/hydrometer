@@ -1,0 +1,39 @@
+cabal-version:      3.4
+name:               hydrometer-ui
+version:            0.1.0.0
+synopsis:           Browser dashboard for hydrometer (reflex-dom, GHC JavaScript backend)
+license:            Apache-2.0
+license-file:       LICENSE
+author:             Hamish Mackenzie
+maintainer:         Hamish.K.Mackenzie@gmail.com
+category:           System
+build-type:         Simple
+
+executable hydrometer-ui
+  main-is:            Main.hs
+  hs-source-dirs:     app src
+  other-modules:      Hydrometer.UI.Common
+                      Hydrometer.UI.Main
+                      Hydrometer.UI.Pages
+  build-depends:      base
+                    , aeson
+                    , bytestring
+                    , containers
+                    , ghcjs-dom
+                    , jsaddle
+                    , jsaddle-dom
+                    , lens
+                    , reflex
+                    , reflex-dom-core
+                    , text
+                    , time
+                    , scientific
+                    , hydrometer-core
+  -- In the browser jsaddle-warp's `run` is an in-page runner; natively it is
+  -- a development server (open http://localhost:3912/).
+  build-depends:      jsaddle-warp >=0.9.4.0 && <0.10
+  if !(impl(ghcjs) || arch(javascript))
+    ghc-options:      -threaded
+  ghc-options:        -Wall
+  default-language:   GHC2021
+  default-extensions: LambdaCase OverloadedStrings DerivingStrategies RecursiveDo

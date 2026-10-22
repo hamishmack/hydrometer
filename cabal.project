@@ -1,0 +1,50 @@
+packages:
+  hydrometer-core/
+  hydrometer-agent/
+  hydrometer-server/
+  hydrometer-ui/
+
+package reflex
+  tests: False
+package reflex-dom-core
+  tests: False
+
+-- The reflex stack's upper bounds lag GHC 9.14 / newer aeson.
+allow-newer:
+    constraints-extras:base
+  , constraints-extras:template-haskell
+  , monoidal-containers:base
+  , monoidal-containers:aeson
+  , monoidal-containers:these
+  , reflex:base
+  , reflex:template-haskell
+  , reflex:these
+  , reflex:profunctors
+  , reflex:primitive
+  , reflex-dom-core:base
+  , reflex-dom-core:template-haskell
+  , reflex-dom-core:aeson
+  , reflex-dom-core:these
+  , reflex-dom-core:lens
+  , reflex-dom-core:primitive
+  , patch:base
+  , patch:these
+  , *:base
+  , *:bytestring
+  , *:containers
+  , *:template-haskell
+  , *:time
+  , *:mmorph
+  , *:monoidal-containers
+  , *:witherable
+  , *:semialign
+  , *:aeson
+
+constraints: monoidal-containers >=0.6.2.0, extra >=1.8, semialign <1.4, dependent-sum-template >=0.2.0.1
+
+-- The browser build uses ghcjs-dom's jsaddle flavour (`jsffi` is a manual flag
+-- that cabal defaults to True).  Gated so the native plan is untouched.
+if arch(javascript)
+  constraints: ghcjs-dom -jsffi
+
+write-ghc-environment-files: never
