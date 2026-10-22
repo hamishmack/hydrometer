@@ -12,7 +12,6 @@ import Control.Monad (forM)
 import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as BC
 import Data.Char (isDigit)
-import Data.Int (Int64)
 import Data.List (isPrefixOf)
 import Data.Maybe (catMaybes, fromMaybe, mapMaybe)
 import Data.Text (Text)
@@ -32,7 +31,7 @@ clockTick, pageSize :: Int64
 clockTick = 100
 pageSize = 4096
 
-tryIO :: IO a -> IO (Maybe a)
+tryIO :: forall a. IO a -> IO (Maybe a)
 tryIO act = either (const Nothing) Just <$> (try (act >>= evaluate) :: IO (Either SomeException a))
 
 readFileStrict :: FilePath -> IO (Maybe BS.ByteString)

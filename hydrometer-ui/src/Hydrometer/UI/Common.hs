@@ -42,7 +42,7 @@ import Data.Time (NominalDiffTime, UTCTime, getCurrentTime)
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime, utcTimeToPOSIXSeconds)
 import Data.Time.Format (defaultTimeLocale, formatTime)
 import GHCJS.DOM.Types (MonadJSM, liftJSM)
-import Language.Javascript.JSaddle (jsg, (#), (!), valToText)
+import Language.Javascript.JSaddle (JSNull (..), jsg, (#), (!), valToText)
 import Numeric (showFFloat)
 import Reflex.Dom.Core
 
@@ -73,10 +73,12 @@ fetchDyn period urlD = do
   let reqs = leftmost [updated urlD, tag (current urlD) pb, tag (current urlD) ticks]
   absReqs <- performEvent (apiUrl <$> reqs)
   performEvent_ (ffor absReqs $ \u -> liftIO (putStrLn ("hydrometer: GET " <> T.unpack u)))
-  resp <- performRequestAsync (ffor absReqs $ \u -> xhrRequest "GET" u def)
-  let decoded = ffor resp $ \r -> case _xhrResponse_responseText r of
-        Nothing -> Left "no response"
-        Just body -> A.eitherDecodeStrict (T.encodeUtf8 body)
+  resp <- performRequestAsyncWithError (ffor absReqs $ \u -> xhrRequest "GET" u def)
+  let decoded = ffor resp $ \case
+        Left e -> Left ("request failed: " <> show e)
+        Right r -> case _xhrResponse_responseText r of
+          Nothing -> Left "no response"
+          Just body -> A.eitherDecodeStrict (T.encodeUtf8 body)
   -- Decode failures go to the console: a silent "Loading…" is no help.
   performEvent_ (ffor (fmapMaybe (either Just (const Nothing)) decoded) $ \e ->
     liftIO (putStrLn ("hydrometer: bad API response: " <> e)))
@@ -211,7 +213,7 @@ chartWidget cls fn argsD = do
     let enc :: ToJSON x => x -> Text
         enc = T.decodeUtf8 . BL.toStrict . A.encode
     -- Defer a frame: on first build the div is not attached and has no size.
-    void $ jsg ("hmCharts" :: Text) # ("draw" :: Text) $ (fn, raw, enc dat, enc opts)
+    void $ jsg ("hmDraw" :: Text) # ("call" :: Text) $ (JSNull, fn, raw, enc dat, enc opts)
 
 -- | 1h / 6h / 24h / 3d / 7d buttons.  Returns hours.
 rangeSelector :: W t m => Int -> m (Dynamic t Int)

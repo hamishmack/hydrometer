@@ -45,6 +45,9 @@ main = do
   hSetBuffering stdout LineBuffering
   api <- lookupEnv "HYDROMETER_API"
   JW.run 3912 $ do
+    -- Charts go through this: it waits for charts.js (loaded asynchronously
+    -- in development) and never throws into Haskell.
+    void $ eval ("window.hmDraw = function (fn, el, j, o) { (function go() { if (window.hmCharts) { window.hmCharts.draw(fn, el, j, o); } else { setTimeout(go, 100); } })(); };" :: Text)
     -- Native development: pull the page assets from the server.
     case api of
       Just base -> void $ eval (T.pack (devLoader base))
