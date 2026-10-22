@@ -59,8 +59,9 @@ type W t m =
 -- the native development runner sets @window.hydrometerApi@ to a server.
 apiUrl :: MonadJSM m => Text -> m Text
 apiUrl path = liftJSM $ do
-  base <- valToText =<< jsg ("window" :: Text) ! ("hydrometerApi" :: Text)
-  pure (if base == "undefined" || T.null base then path else base <> path)
+  -- `|| ''`: on the JS backend valToText of undefined throws.
+  base <- valToText =<< eval ("window.hydrometerApi || ''" :: Text)
+  pure (if T.null base then path else base <> path)
 
 -- | Fetch and decode JSON whenever the URL changes, and every @period@
 -- seconds if given.  Keeps the last good value.
