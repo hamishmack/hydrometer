@@ -5,7 +5,6 @@
 -- Large sample tables are partitioned by day so retention is a cheap DROP of
 -- old partitions (see hydrometer.ensure_partitions / drop_partitions_before).
 
-CREATE SCHEMA IF NOT EXISTS hydrometer;
 COMMENT ON SCHEMA hydrometer IS
   'hydrometer: resource usage of the build farm, attributed to hydra build steps and evaluations. Start with the v_* views; see docs/AGENTS.md.';
 
