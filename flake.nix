@@ -33,6 +33,12 @@
           } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
             hydrometer = flake.packages."hydrometer-server:exe:hydrometer";
           };
+          apps = (flake.apps or { }) // {
+            # The site is static files, so every system previews the x86_64-linux
+            # build (the deployed one).  On macOS 27 the JavaScript cross
+            # compiler does not build: emscripten's python aborts in libffi.
+            preview = { type = "app"; program = "${import ./nix/preview.nix { inherit pkgs; site = self.packages.x86_64-linux.hydrometer-site; }}/bin/hydrometer-preview"; };
+          };
           hydraJobs = flake.hydraJobs // { inherit site; };
         });
     in perSystem // {

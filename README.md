@@ -107,6 +107,13 @@ For development, `nix develop` gives a shell with the toolchain, and
 jsaddle-warp development server: run it with
 `HYDROMETER_API=http://127.0.0.1:9185` and open http://localhost:3912/.
 
+To try a revision's real (JavaScript backend) dashboard against a running
+server before deploying it, `nix run .#preview -- API_BASE [PORT]` serves it
+on http://127.0.0.1:8000/. `API_BASE` is the URL the deployed dashboard is
+served from (its API is `API_BASE/api`); the default is
+`http://127.0.0.1:9185/`, for an ssh tunnel to the server. It always uses the
+x86_64-linux build of the site, so on macOS it needs a linux builder.
+
 ## Deploying
 
 `nixosModules.default` provides `services.hydrometer` (the server, an
