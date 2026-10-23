@@ -12,6 +12,7 @@ module Hydrometer.UI.Common
   , fmtPct
   , fmtDuration
   , fmtNum
+  , fmtFixed
   , fmtTime
   , fmtAgo
   , shortDrv
@@ -20,6 +21,7 @@ module Hydrometer.UI.Common
   , rangeSelector
   , rangeQuery
   , stat
+  , statSub
   , loading
   ) where
 
@@ -110,6 +112,10 @@ fmtNum v
   | abs v >= 100 = T.pack (show (round v :: Int))
   | otherwise = T.pack (showFFloat (Just 2) v "")
 
+-- | A fixed number of decimals, so a live value keeps its width.
+fmtFixed :: Int -> Double -> Text
+fmtFixed d v = T.pack (showFFloat (Just d) v "")
+
 fmtDuration :: Double -> Text
 fmtDuration s
   | s < 60 = T.pack (show (round s :: Int)) <> "s"
@@ -137,6 +143,14 @@ stat :: DomBuilder t m => Text -> Text -> m ()
 stat k v = elClass "div" "stat" $ do
   elClass "div" "k" (text k)
   elClass "div" "v" (text v)
+
+-- | A stat with a small line under the value.  The line is always there
+-- (empty or not) so tiles in a row keep the same height.
+statSub :: DomBuilder t m => Text -> Text -> Text -> m ()
+statSub k v s = elAttr "div" ("class" =: "stat" <> "title" =: (k <> ": " <> v <> (if T.null s then "" else ", " <> s))) $ do
+  elClass "div" "k" (text k)
+  elClass "div" "v" (text v)
+  elClass "div" "s" (text s)
 
 -- | How a table column is rendered, from its name.
 data Fmt = FMono | FNum | FBytes | FSecs | FTime | FPct | FLink Text

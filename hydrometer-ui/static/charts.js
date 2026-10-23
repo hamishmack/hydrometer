@@ -5,11 +5,26 @@
   "use strict";
   var dark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
 
+  // Live charts.  Pages rebuild their DOM on refresh (the Now page every
+  // 5 s), so instances whose element has left the document are disposed.
+  var live = [];
+  function sweep() {
+    live = live.filter(function (x) {
+      if (document.contains(x.el)) return true;
+      if (x.ro) x.ro.disconnect();
+      x.c.dispose();
+      return false;
+    });
+  }
+
   function chart(el) {
     var c = echarts.getInstanceByDom(el);
     if (!c) {
+      sweep();
       c = echarts.init(el, dark ? "dark" : null, { renderer: "canvas" });
-      if (window.ResizeObserver) new ResizeObserver(function () { c.resize(); }).observe(el);
+      var ro = window.ResizeObserver ? new ResizeObserver(function () { c.resize(); }) : null;
+      if (ro) ro.observe(el);
+      live.push({ el: el, c: c, ro: ro });
     }
     return c;
   }
@@ -72,17 +87,43 @@
     }, true);
   }
 
-  // Horizontal bars: rows = [[label, value], ...]
-  function bars(el, json, opts) {
-    var rows = JSON.parse(json).slice().reverse(), o = JSON.parse(opts || "{}");
+  function cssVar(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  }
+
+  // Half-circle pressure gauge of a 0..1 value, banded like the meter bars
+  // (warn above 75%, bad above 90%).
+  function gauge(el, json) {
+    var v = JSON.parse(json);
     chart(el).setOption({
       backgroundColor: "transparent", animation: false,
-      grid: { left: 10, right: 40, top: 10, bottom: 20, containLabel: true },
+      series: [{
+        type: "gauge", startAngle: 180, endAngle: 0, min: 0, max: 1,
+        center: ["50%", "88%"], radius: "160%",
+        axisLine: { lineStyle: { width: 10, color: [[0.75, cssVar("--ok")], [0.9, cssVar("--warn")], [1, cssVar("--bad")]] } },
+        pointer: { length: "72%", width: 4, itemStyle: { color: cssVar("--fg") } },
+        anchor: { show: true, size: 8, itemStyle: { color: cssVar("--fg") } },
+        axisTick: { show: false }, splitLine: { show: false }, axisLabel: { show: false },
+        title: { show: false }, detail: { show: false },
+        data: [{ value: v == null ? 0 : Math.max(0, Math.min(1, v)) }]
+      }]
+    }, true);
+  }
+
+  // Horizontal bars: rows = [[label, value], ...].  The chart grows with the
+  // row count so every category gets a readable label.
+  function bars(el, json, opts) {
+    var rows = JSON.parse(json).slice().reverse(), o = JSON.parse(opts || "{}");
+    el.style.height = Math.max(200, rows.length * 22 + 40) + "px";
+    chart(el).setOption({
+      backgroundColor: "transparent", animation: false,
+      grid: { left: 10, right: 70, top: 10, bottom: 20, containLabel: true },
       tooltip: { trigger: "axis", axisPointer: { type: "shadow" }, valueFormatter: fmt(o.unit) },
       xAxis: { type: "value", axisLabel: { formatter: fmt(o.unit) } },
       yAxis: { type: "category", data: rows.map(function (r) { return r[0] == null ? "(none)" : String(r[0]); }),
-               axisLabel: { width: 260, overflow: "truncate" } },
-      series: [{ type: "bar", data: rows.map(function (r) { return r[1]; }), name: o.label || "" }]
+               axisLabel: { width: 260, overflow: "truncate", interval: 0 } },
+      series: [{ type: "bar", data: rows.map(function (r) { return r[1]; }), name: o.label || "",
+                 label: { show: true, position: "right", fontSize: 11, formatter: function (p) { return fmt(o.unit)(p.value); } } }]
     }, true);
   }
 
@@ -128,13 +169,16 @@
     c.on("click", function (p) { var r = rows[p.dataIndex]; if (r && r.href) location.hash = r.href; });
   }
 
-  var fns = { line: line, spark: spark, bars: bars, gantt: gantt };
+  var fns = { line: line, spark: spark, gauge: gauge, bars: bars, gantt: gantt };
   // Called from Haskell.  Deferred a frame: a freshly built element may not
   // be attached (or sized) yet.
-  function draw(fn, el, json, opts) {
+  function draw(fn, el, json, opts, tries) {
     requestAnimationFrame(function () {
+      // Not attached yet: try again for a few frames, then give up (it was
+      // replaced by a newer build of the page).
+      if (!document.contains(el)) { if ((tries || 0) < 10) draw(fn, el, json, opts, (tries || 0) + 1); return; }
       try { fns[fn](el, json, opts); } catch (e) { console.error("hmCharts." + fn, e); }
     });
   }
-  window.hmCharts = { draw: draw, line: line, spark: spark, bars: bars, gantt: gantt, fmtBytes: fmtBytes };
+  window.hmCharts = { draw: draw, line: line, spark: spark, gauge: gauge, bars: bars, gantt: gantt, fmtBytes: fmtBytes };
 })();

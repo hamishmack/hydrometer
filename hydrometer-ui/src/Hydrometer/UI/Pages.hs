@@ -44,13 +44,18 @@ nowPage = do
           slotsTotal = sum [ fromMaybe 0 (mMaxJobs m) | m <- ms ]
           cores = sum [ fromIntegral (fromMaybe 0 (mCpuCount m)) * fromMaybe 0 (mCpuUtil m) | m <- ms ] :: Double
           totalCores = sum [ fromMaybe 0 (mCpuCount m) | m <- ms, isJust (mCpuUtil m) ]
+          withAgent = length [ () | m <- ms, isJust (mLastSample m) ]
       elClass "div" "stats" $ do
-        stat "Builds running" (showT busySlots <> " / " <> showT slotsTotal)
-        stat "CPU in use" (fmtNum cores <> " / " <> showT totalCores <> " cores")
-        stat "Network in" (fmtRate (sum [ fromMaybe 0 (mNetRxRate m) | m <- ms ]))
+        cpuGauge (if totalCores > 0 then Just (cores / fromIntegral totalCores) else Nothing)
+          (showT (round cores :: Int) <> " / " <> showT totalCores <> " cores")
+          (showT withAgent <> " of " <> showT (length ms) <> " machines reporting")
+        statSub "Builds running" (showT busySlots <> " / " <> showT slotsTotal) (showT (max 0 (slotsTotal - busySlots)) <> " slots free")
+        statSub "Network in" (fmtRate (sum [ fromMaybe 0 (mNetRxRate m) | m <- ms ]))
+          ("out " <> fmtRate (sum [ fromMaybe 0 (mNetTxRate m) | m <- ms ]))
         forM_ (nQueues n) $ \q ->
-          stat ("Runnable " <> qSystem q) (showT (qRunnable q) <> maybe "" (\w -> " (" <> fmtDuration (fromIntegral w / 1000) <> ")") (qOldestRunnableMs q))
-        stat "Evaluating" (showT (length (nEvals n)))
+          statSub ("Runnable " <> qSystem q) (showT (qRunnable q))
+            (maybe "" (\w -> "oldest waiting " <> fmtDuration (fromIntegral w / 1000)) (qOldestRunnableMs q))
+        statSub "Evaluating" (showT (length (nEvals n))) ""
       when (not (null (nEvals n))) $ do
         el "h3" (text "Evaluations in progress")
         elClass "div" "grid" $ forM_ (nEvals n) $ \e -> elClass "div" "card" $ do
@@ -58,13 +63,23 @@ nowPage = do
             elClass "span" "name" (text (eProject e <> ":" <> eJobset e))
             elClass "span" "sub" $ dynText (ffor clock $ \c -> maybe "" (\s -> "running " <> fmtAgo c s) (eStarted e))
           elClass "div" "meters" $ do
-            meterRow "CPU" ((/ 16) <$> eCores e) (maybe "" (\x -> fmtNum x <> " cores") (eCores e))
+            meterRow "CPU" ((/ 16) <$> eCores e) (maybe "" (\x -> fmtFixed 1 x <> " cores") (eCores e))
             meterRow "Mem" Nothing (maybe "" (fmtBytes . fromIntegral) (eRss e))
-          forM_ (eLastEval e) $ \i -> elClass "div" "muted" $ do
+          elClass "div" "muted oneline" $ forM_ (eLastEval e) $ \i -> do
             text "previous: "
             elAttr "a" ("href" =: ("#/eval/" <> showT i)) (text ("eval " <> showT i))
       el "h3" (text "Machines")
       elClass "div" "grid" $ forM_ ms (machineCard clock)
+
+-- | The farm's CPU use as a pressure gauge, in a stat tile two columns wide.
+cpuGauge :: W t m => Maybe Double -> Text -> Text -> m ()
+cpuGauge frac v sub = elAttr "div" ("class" =: "stat gauge" <> "title" =: ("CPU in use: " <> v)) $ do
+  chartWidget "gauge-chart" "gauge" (constDyn (Just (frac, A.object [])))
+  elClass "div" "text" $ do
+    elClass "div" "k" (text "CPU in use")
+    elClass "div" "v" (text (maybe "–" fmtPct frac))
+    elClass "div" "s" (text v)
+    elClass "div" "s" (text sub)
 
 meterRow :: DomBuilder t m => Text -> Maybe Double -> Text -> m ()
 meterRow label frac val = do
@@ -78,11 +93,13 @@ machineCard :: W t m => Dynamic t UTCTime -> MachineNow -> m ()
 machineCard clock m = elClass "div" "card" $ do
   elClass "div" "title" $ do
     elClass "span" "name" $ elAttr "a" ("href" =: ("#/machine/" <> mName m)) (text (mName m))
+    let flags = filter (not . T.null)
+          [ if mDisabled m then "DISABLED" else ""
+          , if isJust (mLastSample m) then "" else "no agent" ]
     elClass "span" "sub" $ text $ T.intercalate " · " $ filter (not . T.null)
       [ maybe "" (\c -> showT c <> " cores") (mCpuCount m)
-      , maybe "" (fmtBytes . fromIntegral) (mMemTotal m)
-      , if mDisabled m then "DISABLED" else ""
-      , if isJust (mLastSample m) then "" else "no agent" ]
+      , maybe "" (fmtBytes . fromIntegral) (mMemTotal m) ]
+    when (not (null flags)) $ elClass "span" "sub bad" (text (T.intercalate " · " flags))
   when (isJust (mLastSample m)) $ do
     elClass "div" "meters" $ do
       meterRow "CPU" (mCpuUtil m) (maybe "–" fmtPct (mCpuUtil m))
@@ -95,9 +112,11 @@ machineCard clock m = elClass "div" "card" $ do
       meterRow "Files" fd (maybe "–" showT (mOpenFiles m))
     when (not (null (mCpuHistory m))) $
       chartWidget "spark" "spark" (constDyn (Just (mCpuHistory m, A.object [])))
+    -- Always present, so the card does not jump as other work comes and goes.
     let others = M.toList (M.filter (>= 0.05) (mClasses m))
-    when (not (null others)) $ elClass "div" "muted" $ text $
-      "Other: " <> T.intercalate ", " [ k <> " " <> fmtNum v <> " cores" | (k, v) <- others ]
+        otherT = if null others then "" else
+          "Other: " <> T.intercalate ", " [ k <> " " <> fmtFixed 1 v <> " cores" | (k, v) <- others ]
+    elAttr "div" ("class" =: "muted oneline" <> "title" =: otherT) (text otherT)
   elClass "div" "slots" $ do
     forM_ (mSlots m) $ \s -> elClass "div" "slot" $ do
       elAttr "div" ("class" =: "drv" <> "title" =: fromMaybe (slDrvName s) (slDrvPath s)) $ do
@@ -107,11 +126,12 @@ machineCard clock m = elClass "div" "card" $ do
           Nothing -> text (slDrvName s)
       elClass "div" "meta" $ do
         forM_ (slStarted s) $ \st -> el "span" $ dynText (ffor clock (`fmtAgo` st))
-        forM_ (slCores s) $ \c -> el "span" (text (fmtNum c <> " cores"))
+        forM_ (slCores s) $ \c -> el "span" (text (fmtFixed 1 c <> " cores"))
         forM_ (slRss s) $ \r -> el "span" (text (fmtBytes (fromIntegral r)))
         forM_ (slNetRxRate s) $ \r -> when (r > 1e5) $ el "span" (text ("↓" <> fmtRate r))
-        forM_ (slJobset s) $ \j -> el "span" (text j)
-      forM_ (slJob s) $ \j -> elAttr "div" ("class" =: "meta mono" <> "title" =: j) (text (T.takeEnd 90 j))
+        forM_ (slJobset s) $ \j -> elAttr "span" ("class" =: "shrink" <> "title" =: j) (text j)
+      forM_ (slJob s) $ \j -> elAttr "div" ("class" =: "job" <> "title" =: j)
+        (text (if T.length j > 90 then "…" <> T.takeEnd 89 j else j))
     let free = fromMaybe 0 (mMaxJobs m) - length [ () | s <- mSlots m, isJust (slBuild s) ]
     forM_ [1 .. free] $ \_ -> elClass "div" "slot free" (text "free slot")
 
@@ -154,13 +174,14 @@ ganttRows (Table cols rows) =
 
 jobsPage :: forall t m. W t m => m ()
 jobsPage = do
+  let metrics = M.fromList [("cpu", "CPU hours"), ("wall", "wall hours"), ("rss", "peak memory"), ("net", "network in (GB)"), ("steps", "steps"), ("import", "import hours")] :: M.Map Text Text
   el "h2" (text "What uses the farm")
   elClass "p" "muted" (text "Finished build steps grouped by a property of the derivation or job. CPU and memory are measured by the agents (steps on machines without an agent count only towards wall time).")
   (groupD, metricD) <- elClass "div" "controls" $ do
     text "Group by"
     g <- dropdown "package" (constDyn (M.fromList [ (k, k) | k <- ["package", "component_kind", "component", "platform", "job_compiler", "project", "jobset", "job", "drv_name", "system", "machine", "run_kind"] ])) def
     text "Order by"
-    mt <- dropdown "cpu" (constDyn (M.fromList [("cpu", "CPU hours"), ("wall", "wall hours"), ("rss", "peak memory"), ("net", "network in"), ("steps", "steps"), ("import", "import hours")])) def
+    mt <- dropdown "cpu" (constDyn metrics) def
     pure (value g, value mt)
   hoursD <- rangeSelector 24
   let url = (\g mt h -> "api/top?group=" <> g <> "&metric=" <> mt <> "&limit=40&" <> rangeQuery h) <$> groupD <*> metricD <*> hoursD
@@ -170,7 +191,8 @@ jobsPage = do
               "wall" -> "wall_h"; "rss" -> "max_peak_rss"; "net" -> "net_rx_gb"; "steps" -> "steps"; "import" -> "import_h"; _ -> "cpu_h"
             idx = length (takeWhile (/= col) cols)
         in [ (case r of (k : _) -> k; [] -> A.Null, case drop idx r of (v : _) -> v; [] -> A.Null) | r <- take 25 rows ]
-  chartWidget "chart tall" "bars" $ (\mt -> fmap (\t -> (barsOf mt t, A.object ["unit" .= (if mt == "rss" then "bytes" else "" :: Text)]))) <$> metricD <*> tD
+  chartWidget "chart" "bars" $ (\mt -> fmap (\t -> (barsOf mt t, A.object
+    [ "unit" .= (if mt == "rss" then "bytes" else "" :: Text), "label" .= fromMaybe mt (M.lookup mt metrics) ]))) <$> metricD <*> tD
   tableWidget [] tD
 
 -- ---------------------------------------------------------------------------
