@@ -10,13 +10,15 @@ module Hydrometer.UI.Pages
   , buildPage
   ) where
 
-import Control.Monad (forM_, when)
+import Control.Monad (forM_, when, (<=<))
 import Data.Aeson ((.=))
 import Data.Aeson qualified as A
 import Data.Aeson.Types qualified as A
 import Data.Map.Strict qualified as M
+import Data.List (partition)
 import Data.Maybe (fromMaybe, isJust)
 import Data.Scientific (toRealFloat)
+import Data.Set qualified as S
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (UTCTime)
@@ -32,15 +34,18 @@ showT = T.pack . show
 -- Now
 
 nowPage :: forall t m. W t m => m ()
-nowPage = do
+nowPage = mdo
   nowD <- fetchDyn (Just 5) (constDyn "api/now") :: m (Dynamic t (Maybe NowResponse))
   clock <- clockDyn
-  dyn_ $ ffor nowD $ \case
-    Nothing -> loading
+  -- Machines whose orphaned-steps list is expanded.  Kept outside the
+  -- rebuild below, which happens on every refresh.
+  openD <- foldDyn (\k o -> if S.member k o then S.delete k o else S.insert k o) S.empty toggles
+  toggles <- switchHold never <=< dyn $ ffor nowD $ \case
+    Nothing -> loading >> pure never
     Just n -> do
       forM_ (nAlerts n) $ \a -> elClass "div" ("alert " <> alLevel a) (text (alMessage a))
       let ms = nMachines n
-          busySlots = sum (map (length . mSlots) ms)
+          busySlots = sum [ length (filter (not . slOrphaned) (mSlots m)) | m <- ms ]
           slotsTotal = sum [ fromMaybe 0 (mMaxJobs m) | m <- ms ]
           cores = sum [ fromIntegral (fromMaybe 0 (mCpuCount m)) * fromMaybe 0 (mCpuUtil m) | m <- ms ] :: Double
           totalCores = sum [ fromMaybe 0 (mCpuCount m) | m <- ms, isJust (mCpuUtil m) ]
@@ -69,7 +74,8 @@ nowPage = do
             text "previous: "
             elAttr "a" ("href" =: ("#/eval/" <> showT i)) (text ("eval " <> showT i))
       el "h3" (text "Machines")
-      elClass "div" "grid" $ forM_ ms (machineCard clock)
+      elClass "div" "grid" $ leftmost <$> mapM (machineCard clock (current openD)) ms
+  pure ()
 
 -- | The farm's CPU use as a pressure gauge, in a stat tile two columns wide.
 cpuGauge :: W t m => Maybe Double -> Text -> Text -> m ()
@@ -89,8 +95,9 @@ meterRow label frac val = do
   elClass "div" cls $ elAttr "div" ("style" =: ("width:" <> showT (round (f * 100) :: Int) <> "%")) blank
   elClass "span" "val" (text val)
 
-machineCard :: W t m => Dynamic t UTCTime -> MachineNow -> m ()
-machineCard clock m = elClass "div" "card" $ do
+-- | Returns the machine's name when its orphaned-steps list is toggled.
+machineCard :: W t m => Dynamic t UTCTime -> Behavior t (S.Set Text) -> MachineNow -> m (Event t Text)
+machineCard clock openB m = elClass "div" "card" $ do
   elClass "div" "title" $ do
     elClass "span" "name" $ elAttr "a" ("href" =: ("#/machine/" <> mName m)) (text (mName m))
     let flags = filter (not . T.null)
@@ -117,8 +124,9 @@ machineCard clock m = elClass "div" "card" $ do
         otherT = if null others then "" else
           "Other: " <> T.intercalate ", " [ k <> " " <> fmtFixed 1 v <> " cores" | (k, v) <- others ]
     elAttr "div" ("class" =: "muted oneline" <> "title" =: otherT) (text otherT)
+  let (orphans, live) = partition slOrphaned (mSlots m)
   elClass "div" "slots" $ do
-    forM_ (mSlots m) $ \s -> elClass "div" "slot" $ do
+    forM_ live $ \s -> elClass "div" "slot" $ do
       elAttr "div" ("class" =: "drv" <> "title" =: fromMaybe (slDrvName s) (slDrvPath s)) $ do
         forM_ (slKind s) $ \k -> elClass "span" ("tag " <> (if isJust (slBuild s) then k else "ifd")) (text (if isJust (slBuild s) then k else "not a hydra step")) >> text " "
         case slBuild s of
@@ -132,8 +140,26 @@ machineCard clock m = elClass "div" "card" $ do
         forM_ (slJobset s) $ \j -> elAttr "span" ("class" =: "shrink" <> "title" =: j) (text j)
       forM_ (slJob s) $ \j -> elAttr "div" ("class" =: "job" <> "title" =: j)
         (text (if T.length j > 90 then "…" <> T.takeEnd 89 j else j))
-    let free = fromMaybe 0 (mMaxJobs m) - length [ () | s <- mSlots m, isJust (slBuild s) ]
+    let free = fromMaybe 0 (mMaxJobs m) - length [ () | s <- live, isJust (slBuild s) ]
     forM_ [1 .. free] $ \_ -> elClass "div" "slot free" (text "free slot")
+    -- Steps hydra lists as running that no builder is running (see the
+    -- alert): collapsed, so they do not bury the real slots.
+    if null orphans then pure never else do
+      isOpen <- sample openB
+      let openAttr = if S.member (mName m) isOpen then "open" =: "" else mempty
+      elAttr "details" ("class" =: "orphans" <> openAttr) $ do
+        (summary, _) <- el' "summary" $ text $
+          showT (length orphans) <> " orphaned step" <> (if length orphans == 1 then "" else "s")
+            <> ": hydra lists them as running, the queue runner does not"
+        forM_ orphans $ \s -> elClass "div" "slot" $ do
+          elAttr "div" ("class" =: "drv" <> "title" =: fromMaybe (slDrvName s) (slDrvPath s)) $
+            case slBuild s of
+              Just b -> elAttr "a" ("href" =: ("#/build/" <> showT b)) (text (slDrvName s))
+              Nothing -> text (slDrvName s)
+          elClass "div" "meta" $ do
+            forM_ (slStarted s) $ \st -> el "span" $ dynText (ffor clock (\c -> "since " <> fmtAgo c st <> " ago"))
+            forM_ (slJobset s) $ \j -> elAttr "span" ("class" =: "shrink" <> "title" =: j) (text j)
+        pure (mName m <$ domEvent Click summary)
 
 -- ---------------------------------------------------------------------------
 -- Machine

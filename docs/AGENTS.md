@@ -133,10 +133,17 @@ Tables are `{columns, rows}`; series are `{time, stepMs, series}`.
 - CPU, memory and network per step exist only for steps on machines running
   an agent, and only since the agent started. Hydra's own timings (wall,
   import, build, upload) exist for every step.
-- The queue runner's `/status/machines` lists only one of each Mac's two
-  builders (darwin and linux), because it is keyed by hostname. hydrometer
-  takes slot counts from the agents (the `hydra-builder --max-jobs` argument)
-  instead.
+- The queue runner's `/status/machines` lists each builder registration
+  separately; a Mac has two (darwin and linux). hydrometer merges them per
+  host: a Mac's slots are the sum of both builders' `maxJobs`, and
+  `machine_status_samples` holds one row per host. The agents' guess from
+  `hydra-builder --max-jobs` is used only when the queue runner does not list
+  a machine.
+- A slot with `orphaned: true` (MCP `now`, `/api/now`) is a step that hydra's
+  database lists as running but that the queue runner has no job for, as
+  of a poll at least two minutes after the step started. Nothing is building
+  it, and its build waits until the queue runner is restarted. This happens
+  when a builder reconnects while it holds steps.
 - `unmatched` runs are builds hydra did not schedule on that machine, mostly
   import-from-derivation during evaluation.
 - The bottleneck thresholds are deliberately simple; check the numeric

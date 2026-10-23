@@ -6,6 +6,7 @@ module Hydrometer.Server.QueueRunner
   , emptyQueueState
   , runQueuePoller
   , parseMachines
+  , mergeByHost
   , parseQueues
   ) where
 
@@ -19,6 +20,8 @@ import Data.Aeson.KeyMap qualified as KM
 import Data.Aeson.Key qualified as K
 import Data.Aeson.Types qualified as A
 import Data.Int (Int64)
+import Data.List (foldl1', nub)
+import Data.Map.Strict qualified as M
 import Data.Maybe (catMaybes, mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -45,6 +48,8 @@ data QrMachine = QrMachine
   , qmAvgBuildMs   :: !(Maybe Int64)
   , qmUploading    :: !(Maybe Int)
   , qmDownloading  :: !(Maybe Int)
+  , qmJobs         :: ![Text]
+    -- ^ The steps it is running, as .drv basenames (no store directory).
   } deriving stock (Show)
 
 data QueueState = QueueState
@@ -82,6 +87,28 @@ parseMachines v = maybe [] id $ flip A.parseMaybe v $ A.withObject "status" $ \o
         <*> stat "avgStepBuildTimeMs"
         <*> stat "currentUploadingPathCount"
         <*> stat "currentDownloadingPathCount"
+        <*> (mapMaybe (A.parseMaybe A.parseJSON) <$> m .:? "jobs" .!= ([] :: [A.Value]))
+
+-- | One entry per host.  The queue runner lists each builder registration
+-- separately, and a Mac runs two (a darwin builder and a linux one), but
+-- hydra's buildsteps.machine (and everything in hydrometer) is per host.
+mergeByHost :: [QrMachine] -> [QrMachine]
+mergeByHost ms = map (foldl1' merge) (M.elems (M.fromListWith (flip (++)) [ (qmName m, [m]) | m <- ms ]))
+  where
+    merge a b = a
+      { qmSystems = nub (qmSystems a ++ qmSystems b)
+      , qmMaxJobs = qmMaxJobs a + qmMaxJobs b
+      , qmCurrentJobs = qmCurrentJobs a + qmCurrentJobs b
+        -- The host is disabled only when every builder on it is.
+      , qmDisabled = qmDisabled a && qmDisabled b
+      , qmConsecutiveFailures = max (qmConsecutiveFailures a) (qmConsecutiveFailures b)
+        -- load1 and memory are the host's own (each builder reports them);
+        -- the step-time averages stay those of the first registration.
+      , qmStepsDone = (+) <$> qmStepsDone a <*> qmStepsDone b
+      , qmUploading = (+) <$> qmUploading a <*> qmUploading b
+      , qmDownloading = (+) <$> qmDownloading a <*> qmDownloading b
+      , qmJobs = qmJobs a ++ qmJobs b
+      }
 
 -- | Steps that are runnable (all dependencies built) and not yet
 -- scheduled on a machine, per system.
@@ -119,7 +146,7 @@ runQueuePoller d mgr base st = forever $ do
       mv <- get "/status/machines"
       qv <- get "/status/queues"
       now <- getCurrentTime
-      let ms = parseMachines mv
+      let ms = mergeByHost (parseMachines mv)
           qs = parseQueues now qv
       atomically $ writeTVar st (QueueState ms qs (Just now) Nothing)
       withTx d $ \c -> do

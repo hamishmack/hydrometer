@@ -14,6 +14,7 @@ import Data.Set qualified as S
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (getCurrentTime)
+import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 import Database.PostgreSQL.Simple (Connection)
 
 import Hydrometer.Api
@@ -43,7 +44,12 @@ buildNow c agentsVar queueVar = do
   let qrByName = M.fromList [ (qmName m, m) | m <- qsMachines qs ]
       stepsByMachine = M.fromListWith (++) [ (m, [s]) | s@(m, _, _, _, _, _, _, _, _, _) <- steps ]
       names = S.toList (S.fromList (M.keys agents ++ M.keys qrByName ++ filter (not . T.null) (M.keys stepsByMachine)))
-      machines = map (machineNow agents qrByName stepsByMachine) names
+      -- When the queue runner's job lists can be trusted to judge hydra's
+      -- busy steps against: a recent, successful poll.
+      qrAsOf = case (qsPolled qs, qsError qs) of
+        (Just t, Nothing) | let ms = round (utcTimeToPOSIXSeconds t * 1000), now - ms < 60000 -> Just ms
+        _ -> Nothing
+      machines = map (machineNow agents qrByName qrAsOf stepsByMachine) names
       queues = [ QueueNow sys n w | (sys, n, w) <- qsQueues qs, n > 0 || sys `elem` activeSystems ]
       activeSystems = concatMap mSystems machines
       evalRuns = [ (rName r, r, h) | AgentState { asLatest = Just s } <- M.elems agents
@@ -57,7 +63,8 @@ buildNow c agentsVar queueVar = do
         | (p, j, st, prev) <- evals
         , let er = listToMaybe [ x | x@(n, _, _) <- evalRuns, n == p <> ":" <> j ] ]
       runnableTotal = sum [ n | QueueNow _ n _ <- queues ]
-      freeSlots = sum [ max 0 (fromMaybe 0 (mMaxJobs m) - length (mSlots m)) | m <- machines, not (mDisabled m) ]
+      freeSlots = sum [ max 0 (fromMaybe 0 (mMaxJobs m) - length (filter (not . slOrphaned) (mSlots m))) | m <- machines, not (mDisabled m) ]
+      orphans = [ (mName m, s) | m <- machines, s <- mSlots m, slOrphaned s ]
       stalled = case lastFinish of
         Just lf -> runnableTotal > 0 && freeSlots > 0 && now - lf > 15 * 60000
         Nothing -> False
@@ -65,6 +72,11 @@ buildNow c agentsVar queueVar = do
         [ Alert "critical" ("No build step has finished for " <> T.pack (show ((now - fromMaybe now lastFinish) `div` 60000))
             <> " minutes while " <> T.pack (show runnableTotal) <> " steps are runnable and machines have free slots: the queue runner may be stalled.")
         | stalled ]
+        ++ [ Alert "critical" (T.pack (show (length orphans)) <> " build steps that hydra lists as running are not running on any builder ("
+              <> T.intercalate ", " [ n <> ": " <> T.pack (show k) | (n, k) <- M.toList (M.fromListWith (+) [ (n, 1 :: Int) | (n, _) <- orphans ]) ]
+              <> "), so " <> T.pack (show (S.size (S.fromList (mapMaybe (slBuild . snd) orphans))))
+              <> " builds wait on them. The queue runner lost them (usually when a builder reconnected); restarting hydra-queue-runner requeues them.")
+           | not (null orphans) ]
         ++ [ Alert "warning" ("Queue runner status unavailable: " <> e) | Just e <- [qsError qs] ]
         ++ [ Alert "warning" ("Agent on " <> n <> " is not answering: " <> T.take 200 e)
            | (n, a) <- M.toList agents, Just e <- [asError a] ]
@@ -80,10 +92,10 @@ buildNow c agentsVar queueVar = do
     , nEvals = evalsNow, nAlerts = alerts }
 
 machineNow
-  :: Map Text AgentState -> Map Text QrMachine
+  :: Map Text AgentState -> Map Text QrMachine -> Maybe Int64
   -> Map Text [(Text, Int, Int, Text, Text, Text, Text, Text, Maybe Text, Maybe Int64)]
   -> Text -> MachineNow
-machineNow agents qrByName stepsByMachine name = MachineNow
+machineNow agents qrByName qrAsOf stepsByMachine name = MachineNow
   { mName = name
   , mOs = aOs <$> info
   , mCpuCount = aCpuCount <$> info
@@ -118,8 +130,23 @@ machineNow agents qrByName stepsByMachine name = MachineNow
     host = sHost <$> latest
     qr = M.lookup name qrByName
     builders = maybe [] aBuilders info
-    systems = if null builders then maybe [] qmSystems qr else concatMap bSystems builders
-    maxJobs = if null builders then qmMaxJobs <$> qr else Just (sum (map bMaxJobs builders))
+    -- The queue runner knows every registration's capacity; the agent's
+    -- guess from builder command lines is only a fallback.
+    systems = case qr of
+      Just m | not (null (qmSystems m)) -> qmSystems m
+      _ -> concatMap bSystems builders
+    maxJobs = case qr of
+      Just m -> Just (qmMaxJobs m)
+      Nothing | null builders -> Nothing
+              | otherwise -> Just (sum (map bMaxJobs builders))
+    qrJobs = S.fromList (maybe [] qmJobs qr)
+    -- Hydra lists the step as running here but the queue runner has no such
+    -- job.  Only steps that started well before the poll count, since a
+    -- step dispatched since the poll is not in its list yet.
+    orphaned drvPath started = case qrAsOf of
+      Just asOf -> not (T.takeWhileEnd (/= '/') drvPath `S.member` qrJobs)
+                   && maybe False (< asOf - 120000) started
+      Nothing -> False
     hydraSteps = M.findWithDefault [] name stepsByMachine
     runs = maybe [] sRuns latest
     interval = maybe 5000 (hIntervalMs . sHost) latest
@@ -134,7 +161,8 @@ machineNow agents qrByName stepsByMachine name = MachineNow
         , slCores = (\x -> fromIntegral (rCpuMs x) / fromIntegral (max 1 interval)) <$> r
         , slRss = rFootprint <$> r
         , slNetRxRate = (\x -> fromIntegral (rNetRxBytes x) * 1000 / fromIntegral (max 1 interval)) <$> r
-        , slCpuSeconds = Nothing }
+        , slCpuSeconds = Nothing
+        , slOrphaned = orphaned drvPath started && null r }
     stepNames = S.fromList [ d | (_, _, _, _, _, _, d, _, _, _) <- hydraSteps ]
     -- Builds the agent sees that hydra did not schedule here (IFD for an
     -- evaluation, or steps hydra has not yet recorded).
@@ -146,6 +174,6 @@ machineNow agents qrByName stepsByMachine name = MachineNow
           , slCores = Just (fromIntegral (rCpuMs r) / fromIntegral (max 1 interval))
           , slRss = Just (rFootprint r)
           , slNetRxRate = Just (fromIntegral (rNetRxBytes r) * 1000 / fromIntegral (max 1 interval))
-          , slCpuSeconds = Nothing }
+          , slCpuSeconds = Nothing, slOrphaned = False }
       | r <- runs, rKind r /= Evaluation, not (rName r `S.member` stepNames) ]
     slots = map stepSlot hydraSteps ++ extraSlots

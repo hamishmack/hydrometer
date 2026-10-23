@@ -18,6 +18,7 @@ module Hydrometer.Api
 
 import Data.Aeson (FromJSON (..), ToJSON (..), Options (..), defaultOptions, genericParseJSON, genericToJSON)
 import Data.Aeson qualified as A
+import Data.Aeson.KeyMap qualified as KM
 import Data.Char (isUpper, toLower)
 import Data.Int (Int64)
 import Data.Map.Strict (Map)
@@ -116,10 +117,17 @@ data SlotNow = SlotNow
   , slNetRxRate :: !(Maybe Double)
   , slCpuSeconds :: !(Maybe Double)
     -- ^ CPU seconds so far.
+  , slOrphaned  :: !Bool
+    -- ^ Hydra's database lists this step as running, but the queue runner
+    -- has no such job on the machine: nothing is building it, and its build
+    -- waits until the queue runner is restarted.
   } deriving stock (Show, Eq, Generic)
 
 instance ToJSON SlotNow where toJSON = genericToJSON apiOptions
-instance FromJSON SlotNow where parseJSON = genericParseJSON apiOptions
+-- | @orphaned@ defaults to false, so a newer UI still reads an older server.
+instance FromJSON SlotNow where
+  parseJSON = A.withObject "SlotNow" $ \o ->
+    genericParseJSON apiOptions (A.Object (KM.insertWith (\_ old -> old) "orphaned" (A.Bool False) o))
 
 data QueueNow = QueueNow
   { qSystem   :: !Text

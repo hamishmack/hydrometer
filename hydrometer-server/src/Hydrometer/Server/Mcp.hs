@@ -48,7 +48,7 @@ instructions = T.unlines
 
 tools :: [A.Value]
 tools =
-  [ tool "now" "What every machine is doing right now: host CPU/memory/network, the build in each slot with its live CPU and memory, runnable queue depth per system, running evaluations, and alerts (e.g. a stalled queue runner)." []
+  [ tool "now" "What every machine is doing right now: host CPU/memory/network, the build in each slot with its live CPU and memory, runnable queue depth per system, running evaluations, and alerts (e.g. a stalled queue runner). A slot marked orphaned is a step hydra lists as running that no builder is running." []
   , tool "top_jobs" "Which kinds of job use the most resources. Groups finished steps and sums CPU hours, wall hours, peak memory and network."
       [ ("group", "string", "package (default), component_kind, component, platform, job_compiler, project, jobset, job, drv_name, system, machine or run_kind")
       , ("metric", "string", "cpu (default), wall, rss, net, steps or import")
