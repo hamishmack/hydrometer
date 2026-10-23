@@ -16,7 +16,7 @@ pkgs.writeShellApplication {
     cp -r ${site}/. "$dir"
     chmod -R u+w "$dir"
     # The UI prefixes API paths with window.hydrometerApi when it is set.
-    sed -i "s|<script src=\"hydrometer-ui.js\">|<script>window.hydrometerApi = '$api';</script>\n  &|" "$dir/index.html"
+    sed -i "s|<script src=\"hydrometer-ui.js[^\"]*\">|<script>window.hydrometerApi = '$api';</script>\n  &|" "$dir/index.html"
     echo "hydrometer UI from ${site}"
     echo "API: $api"
     echo "open http://127.0.0.1:$port/"

@@ -10,8 +10,11 @@ module Hydrometer.Server.Http
 
 import Control.Concurrent.STM (TVar)
 import Control.Exception (SomeException, displayException, try)
+import Control.Monad (unless)
 import Data.Aeson ((.=))
 import Data.Aeson qualified as A
+import Data.ByteString qualified as BS
+import Data.ByteString.Builder (byteString)
 import Data.ByteString.Char8 qualified as BC
 import Data.Int (Int64)
 import Data.List (isSuffixOf)
@@ -23,7 +26,8 @@ import Data.Time (addUTCTime, getCurrentTime)
 import Network.HTTP.Types
 import Network.Wai
 import System.Directory (doesFileExist)
-import System.FilePath ((</>))
+import System.FilePath (dropTrailingPathSeparator, takeFileName, (</>))
+import System.IO (IOMode (..), withBinaryFile)
 import Text.Read (readMaybe)
 
 import Hydrometer.Server.Db
@@ -120,7 +124,22 @@ app env req respond = do
           exists <- doesFileExist (dir </> rel)
           -- Unknown paths fall back to index.html (the UI routes on the hash).
           let file = if exists then dir </> rel else dir </> "index.html"
-          pure (responseFile status200 [(hContentType, contentType file), (hCacheControl, "no-cache")] file Nothing)
+              -- Files in the nix store all have mtime 1970, so Last-Modified
+              -- revalidation would answer 304 across deploys (and Cloudflare
+              -- kept serving the old UI).  The site's store path names the
+              -- build, so it is the ETag; and the file is streamed rather
+              -- than sent with responseFile, whose If-Modified-Since check
+              -- would still answer 304 to a cache that has no ETag yet.
+              etag = BC.pack ("\"" <> takeFileName (dropTrailingPathSeparator dir) <> "\"")
+              hdrs = [(hContentType, contentType file), (hCacheControl, "no-cache"), (hETag, etag)]
+          pure $ if lookup hIfNoneMatch (requestHeaders req) == Just etag
+            then responseLBS status304 hdrs ""
+            else responseStream status200 hdrs $ \send flush ->
+              withBinaryFile file ReadMode $ \h ->
+                let loop = do
+                      chunk <- BS.hGetSome h 65536
+                      unless (BS.null chunk) (send (byteString chunk) >> loop)
+                in loop >> flush
 
     contentType f
       | ".html" `isSuffixOf` f = "text/html; charset=utf-8"
