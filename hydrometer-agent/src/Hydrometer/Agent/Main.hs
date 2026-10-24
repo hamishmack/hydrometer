@@ -19,6 +19,7 @@ import Data.Sequence qualified as Seq
 import Data.String (fromString)
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Text.IO qualified as T
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Network.HTTP.Types (status200, status400, status404, hContentType)
 import Network.Wai (Application, ResponseReceived, pathInfo, queryString, responseLBS)
@@ -31,7 +32,7 @@ import GHC.Conc (getNumProcessors)
 
 import Hydrometer.Agent.Platform
 import Hydrometer.Agent.Sampler
-import Hydrometer.Agent.Sys (HostRaw (..), Proc (..), ProcArgs (..))
+import Hydrometer.Agent.Sys (HostRaw (..), Proc (..), ProcArgs (..), parseBuilderToml)
 import Hydrometer.Types
 
 data Config = Config
@@ -147,15 +148,28 @@ app infoVar buf req respond = readTVarIO infoVar >>= \info -> case pathInfo req 
     json :: A.ToJSON a => a -> IO ResponseReceived
     json v = respond (responseLBS status200 [(hContentType, "application/json")] (A.encode v))
 
--- | The hydra queue builders on this host and their capacity, from their
--- command lines (@--systems S@ repeated, @--max-jobs N@).
+-- | The hydra queue builders on this host and their capacity: from the
+-- config file named by @--config-path@ (current builders), else from the
+-- command line (@--systems S@ repeated, @--max-jobs N@; older ones).
 findBuilders :: Platform -> IO [BuilderInfo]
 findBuilders pl = do
   ps <- plReadProcs pl
   let builders = [ p | p <- ps, pComm p == "hydra-builder" || "/bin/hydra-builder" `T.isSuffixOf` pPath p ]
   infos <- mapM (plReadProcArgs pl . pPid) builders
-  pure [ BuilderInfo (systemsOf argv) (maxJobsOf argv) | Just (ProcArgs argv _) <- infos ]
+  mapM builderInfo [ argv | Just (ProcArgs argv _) <- infos ]
   where
+    builderInfo argv = case configPathOf argv of
+      Just path -> do
+        r <- try (T.readFile (T.unpack path)) :: IO (Either SomeException Text)
+        pure $ case parseBuilderToml <$> r of
+          Right (mj, sys) -> BuilderInfo (if null sys then systemsOf argv else sys) (maybe (maxJobsOf argv) id mj)
+          Left _ -> BuilderInfo (systemsOf argv) (maxJobsOf argv)
+      Nothing -> pure (BuilderInfo (systemsOf argv) (maxJobsOf argv))
+    configPathOf = \case
+      ("--config-path" : path : _) -> Just path
+      (a : r) | Just path <- T.stripPrefix "--config-path=" a -> Just path
+              | otherwise -> configPathOf r
+      [] -> Nothing
     systemsOf = \case
       ("--systems" : s : r) -> s : systemsOf r
       (_ : r) -> systemsOf r

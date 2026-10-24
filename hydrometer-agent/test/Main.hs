@@ -40,6 +40,10 @@ main = do
     (Just (RootInfo Evaluation "haskell-nix:pullrequest-2606" [] Nothing))
     (identifyEval ["perl", "/nix/store/x-hydra/bin/hydra-eval-jobset", "haskell-nix", "pullrequest-2606"])
 
+  check "identifyEval wrapped"
+    (Just (RootInfo Evaluation "ican-group-haskell-nix:master" [] Nothing))
+    (identifyEval ["/nix/store/p-perl/bin/perl", "/nix/store/h-hydra/bin/.hydra-eval-jobset-wrapped", "ican-group-haskell-nix", "master"])
+
   -- A process table: launchd(1), nix-daemon(100, root) -> worker(101, root)
   -- -> nix-linux-builder(200, uid 310) ; VM(201, uid 310, ppid 1);
   -- worker -> bash(300, uid 311) -> clang(301, uid 311);
@@ -64,6 +68,11 @@ main = do
   check "others" [1, 100, 101, 400, 500] (map pPid (gOther g))
   check "classes" ["other", "nix-daemon", "nix-daemon", "other", "hydra-builder"]
     (map (processClass 0 byPid) (gOther g) :: [Text])
+
+  check "parseBuilderToml"
+    (Just 4, ["aarch64-linux", "x86_64-linux"])
+    (parseBuilderToml "buildDirAvailThreshold = 10.0\nmandatoryFeatures = []\nmaxJobs = 4\nsupportedFeatures = [\"big-parallel\", \"benchmark\"]\nsystems = [\"aarch64-linux\", \"x86_64-linux\"]\nuseSubstitutes = true\n")
+  check "parseBuilderToml without the keys" (Nothing, []) (parseBuilderToml "pingInterval = 10\n")
 
   n <- readIORef failures
   if n == 0 then putStrLn "all tests passed" else exitFailure

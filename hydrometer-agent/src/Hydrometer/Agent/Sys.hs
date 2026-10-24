@@ -7,6 +7,7 @@ module Hydrometer.Agent.Sys
   , ProcArgs (..)
   , parseProcArgs2
   , parseNulSeparated
+  , parseBuilderToml
   ) where
 
 import Data.ByteString (ByteString)
@@ -14,6 +15,7 @@ import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as BC
 import Data.Int (Int64)
 import Data.Text (Text)
+import Data.Text qualified as T
 import Data.Text.Encoding qualified as T
 import Data.Text.Encoding.Error qualified as T
 
@@ -91,3 +93,22 @@ parseProcArgs2 bs
 -- @/proc/<pid>/environ@.
 parseNulSeparated :: ByteString -> [Text]
 parseNulSeparated = map decode . filter (not . BS.null) . BS.split 0
+
+-- | @maxJobs@ and @systems@ from a hydra-builder config file
+-- (@--config-path@), which holds them since the builder stopped taking
+-- @--max-jobs@ and @--systems@ flags.  It is TOML written by nix
+-- (@pkgs.formats.toml@): one @key = value@ per line, string arrays on one
+-- line, so a full TOML parser is not needed.
+parseBuilderToml :: Text -> (Maybe Int, [Text])
+parseBuilderToml t = (maxJobs, systems)
+  where
+    kvs = [ (T.strip k, T.strip (T.drop 1 v))
+          | l <- T.lines t, let (k, v) = T.breakOn "=" l, not (T.null v) ]
+    maxJobs = case lookup "maxJobs" kvs of
+      Just v | [(n, "")] <- reads (T.unpack v) -> Just n
+      _ -> Nothing
+    systems = case lookup "systems" kvs of
+      Just v | Just inner <- T.stripPrefix "[" v >>= T.stripSuffix "]" ->
+        [ s | x <- T.splitOn "," inner
+            , let s = T.dropAround (== '"') (T.strip x), not (T.null s) ]
+      _ -> []

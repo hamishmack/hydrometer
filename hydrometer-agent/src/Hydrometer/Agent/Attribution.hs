@@ -172,7 +172,11 @@ identifyFromBuildJson = A.parseMaybe $ A.withObject "build.json" $ \o -> do
 
 -- | @hydra-eval-jobset <project> <jobset>@.
 identifyEval :: [Text] -> Maybe RootInfo
-identifyEval argv = case dropWhile (not . ("hydra-eval-jobset" `T.isSuffixOf`)) argv of
+identifyEval argv = case dropWhile (not . isEvalJobset) argv of
   (_ : project : jobset : _) -> Just RootInfo
     { riKind = Evaluation, riName = project <> ":" <> jobset, riOutputs = [], riSystem = Nothing }
   _ -> Nothing
+  where
+    -- The script, or the copy makeWrapper renames it to (as hydra-evaluator
+    -- runs it: .../bin/.hydra-eval-jobset-wrapped).
+    isEvalJobset a = T.takeWhileEnd (/= '/') a `elem` ["hydra-eval-jobset", ".hydra-eval-jobset-wrapped"]
