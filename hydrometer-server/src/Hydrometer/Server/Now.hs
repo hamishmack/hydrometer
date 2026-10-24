@@ -20,7 +20,7 @@ import Database.PostgreSQL.Simple (Connection)
 import Hydrometer.Api
 import Hydrometer.Server.Db (epochMs)
 import Hydrometer.Server.Ingest (AgentState (..))
-import Hydrometer.Server.Queries (busySteps, lastStepFinish, runningEvals)
+import Hydrometer.Server.Queries (busySteps, lastStepFinish, pendingEvals, runningEvals)
 import Hydrometer.Server.QueueRunner
 import Hydrometer.Types
 
@@ -40,6 +40,7 @@ buildNow c agentsVar queueVar = do
   now <- epochMs <$> getCurrentTime
   steps <- busySteps c
   evals <- runningEvals c
+  pending <- pendingEvals c
   lastFinish <- lastStepFinish c
   let qrByName = M.fromList [ (qmName m, m) | m <- qsMachines qs ]
       stepsByMachine = M.fromListWith (++) [ (m, [s]) | s@(m, _, _, _, _, _, _, _, _, _) <- steps ]
@@ -62,6 +63,14 @@ buildNow c agentsVar queueVar = do
             , eLastEval = prev }
         | (p, j, st, prev) <- evals
         , let er = listToMaybe [ x | x@(n, _, _) <- evalRuns, n == p <> ":" <> j ] ]
+      pendingNow =
+        [ PendingEval { peProject = p, peJobset = j, peRequested = rq, peLastChecked = lc
+                      , peLastEval = le, peLastEvalSeconds = ls }
+        | (p, j, rq, lc, le, ls) <- pending ]
+      -- How long the longest-waiting requested evaluation has waited.
+      oldestRequest = case [ now - t | Just t <- map peRequested pendingNow ] of
+        [] -> Nothing
+        ws -> Just (maximum ws)
       runnableTotal = sum [ n | QueueNow _ n _ <- queues ]
       freeSlots = sum [ max 0 (fromMaybe 0 (mMaxJobs m) - length (filter (not . slOrphaned) (mSlots m))) | m <- machines, not (mDisabled m) ]
       orphans = [ (mName m, s) | m <- machines, s <- mSlots m, slOrphaned s ]
@@ -77,6 +86,9 @@ buildNow c agentsVar queueVar = do
               <> "), so " <> T.pack (show (S.size (S.fromList (mapMaybe (slBuild . snd) orphans))))
               <> " builds wait on them. The queue runner lost them (usually when a builder reconnected); restarting hydra-queue-runner requeues them.")
            | not (null orphans) ]
+        ++ [ Alert "critical" (T.pack (show (length pendingNow)) <> " evaluations are pending, the oldest requested "
+              <> T.pack (show (w `div` 60000)) <> " minutes ago, but none is running: hydra-evaluator may be stalled.")
+           | null evals, Just w <- [oldestRequest], w > 10 * 60000 ]
         ++ [ Alert "warning" ("Queue runner status unavailable: " <> e) | Just e <- [qsError qs] ]
         ++ [ Alert "warning" ("Agent on " <> n <> " is not answering: " <> T.take 200 e)
            | (n, a) <- M.toList agents, Just e <- [asError a] ]
@@ -89,7 +101,7 @@ buildNow c agentsVar queueVar = do
       pct a b = T.pack (show (a * 100 `div` max 1 b)) <> "%"
   pure NowResponse
     { nTime = now, nMachines = machines, nQueues = sortOn qSystem queues
-    , nEvals = evalsNow, nAlerts = alerts }
+    , nEvals = evalsNow, nPendingEvals = pendingNow, nAlerts = alerts }
 
 machineNow
   :: Map Text AgentState -> Map Text QrMachine -> Maybe Int64

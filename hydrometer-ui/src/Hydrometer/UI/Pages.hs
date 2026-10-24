@@ -57,22 +57,28 @@ nowPage = mdo
         statSub "Builds running" (showT busySlots <> " / " <> showT slotsTotal) (showT (max 0 (slotsTotal - busySlots)) <> " slots free")
         statSub "Network in" (fmtRate (sum [ fromMaybe 0 (mNetRxRate m) | m <- ms ]))
           ("out " <> fmtRate (sum [ fromMaybe 0 (mNetTxRate m) | m <- ms ]))
-        forM_ (nQueues n) $ \q ->
-          statSub ("Runnable " <> qSystem q) (showT (qRunnable q))
-            (maybe "" (\w -> "oldest waiting " <> fmtDuration (fromIntegral w / 1000)) (qOldestRunnableMs q))
-        statSub "Evaluating" (showT (length (nEvals n))) ""
-      when (not (null (nEvals n))) $ do
-        el "h3" (text "Evaluations in progress")
-        elClass "div" "grid" $ forM_ (nEvals n) $ \e -> elClass "div" "card" $ do
-          elClass "div" "title" $ do
-            elClass "span" "name" (text (eProject e <> ":" <> eJobset e))
-            elClass "span" "sub" $ dynText (ffor clock $ \c -> maybe "" (\s -> "running " <> fmtAgo c s) (eStarted e))
-          elClass "div" "meters" $ do
-            meterRow "CPU" ((/ 16) <$> eCores e) (maybe "" (\x -> fmtFixed 1 x <> " cores") (eCores e))
-            meterRow "Mem" Nothing (maybe "" (fmtBytes . fromIntegral) (eRss e))
-          elClass "div" "muted oneline" $ forM_ (eLastEval e) $ \i -> do
-            text "previous: "
-            elAttr "a" ("href" =: ("#/eval/" <> showT i)) (text ("eval " <> showT i))
+        -- One tile, not one per system: most systems have nothing waiting.
+        let waiting = [ q | q <- nQueues n, qRunnable q > 0 ]
+        statSub "Runnable" (showT (sum (map qRunnable (nQueues n))))
+          (T.intercalate " · " [ qSystem q <> " " <> showT (qRunnable q)
+                                   <> maybe "" (\w -> " (" <> fmtDuration (fromIntegral w / 1000) <> ")") (qOldestRunnableMs q)
+                               | q <- waiting ])
+        statSub "Evaluating" (showT (length (nEvals n)))
+          (let k = length (nPendingEvals n) in if k == 0 then "" else showT k <> " pending")
+      when (not (null (nEvals n) && null (nPendingEvals n))) $ do
+        el "h3" (text "Evaluations")
+        elClass "div" "grid" $ do
+          forM_ (nEvals n) $ \e -> elClass "div" "card" $ do
+            elClass "div" "title" $ do
+              elClass "span" "name" (text (eProject e <> ":" <> eJobset e))
+              elClass "span" "sub" $ dynText (ffor clock $ \c -> maybe "" (\s -> "running " <> fmtAgo c s) (eStarted e))
+            elClass "div" "meters" $ do
+              meterRow "CPU" ((/ 16) <$> eCores e) (maybe "" (\x -> fmtFixed 1 x <> " cores") (eCores e))
+              meterRow "Mem" Nothing (maybe "" (fmtBytes . fromIntegral) (eRss e))
+            elClass "div" "muted oneline" $ forM_ (eLastEval e) $ \i -> do
+              text "previous: "
+              elAttr "a" ("href" =: ("#/eval/" <> showT i)) (text ("eval " <> showT i))
+          when (not (null (nPendingEvals n))) $ pendingCard clock (nPendingEvals n)
       el "h3" (text "Machines")
       elClass "div" "grid" $ leftmost <$> mapM (machineCard clock (current openD)) ms
   pure ()
@@ -86,6 +92,22 @@ cpuGauge frac v sub = elAttr "div" ("class" =: "stat gauge" <> "title" =: ("CPU 
     elClass "div" "v" (text (maybe "–" fmtPct frac))
     elClass "div" "s" (text v)
     elClass "div" "s" (text sub)
+
+-- | The evaluator's queue, in the order it will start the evaluations.
+pendingCard :: W t m => Dynamic t UTCTime -> [PendingEval] -> m ()
+pendingCard clock ps = elClass "div" "card pending" $ do
+  elClass "div" "title" $ do
+    elClass "span" "name" (text "Pending")
+    elClass "span" "sub" (text (showT (length ps) <> " waiting, in start order"))
+  elClass "ol" "pending-list" $ forM_ ps $ \p -> el "li" $ do
+    elAttr "div" ("class" =: "drv" <> "title" =: (peProject p <> ":" <> peJobset p)) $
+      text (peProject p <> ":" <> peJobset p)
+    elClass "div" "meta" $ do
+      case peRequested p of
+        Just t -> el "span" $ dynText (ffor clock (\c -> "requested " <> fmtAgo c t <> " ago"))
+        Nothing -> el "span" (text "check interval elapsed")
+      forM_ (peLastEvalSeconds p) $ \s -> el "span" (text ("last eval took " <> fmtDuration (fromIntegral s)))
+      forM_ (peLastEval p) $ \i -> elAttr "a" ("href" =: ("#/eval/" <> showT i)) (text ("eval " <> showT i))
 
 meterRow :: DomBuilder t m => Text -> Maybe Double -> Text -> m ()
 meterRow label frac val = do
@@ -141,7 +163,8 @@ machineCard clock openB m = elClass "div" "card" $ do
       forM_ (slJob s) $ \j -> elAttr "div" ("class" =: "job" <> "title" =: j)
         (text (if T.length j > 90 then "…" <> T.takeEnd 89 j else j))
     let free = fromMaybe 0 (mMaxJobs m) - length [ () | s <- live, isJust (slBuild s) ]
-    forM_ [1 .. free] $ \_ -> elClass "div" "slot free" (text "free slot")
+    when (free > 0) $ elClass "div" "slot free" $
+      text (showT free <> " free slot" <> (if free == 1 then "" else "s"))
     -- Steps hydra lists as running that no builder is running (see the
     -- alert): collapsed, so they do not bury the real slots.
     if null orphans then pure never else do

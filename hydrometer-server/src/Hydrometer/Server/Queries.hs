@@ -19,6 +19,7 @@ module Hydrometer.Server.Queries
   , busySteps
   , lastStepFinish
   , runningEvals
+  , pendingEvals
   ) where
 
 import Data.Int (Int64)
@@ -281,6 +282,29 @@ lastStepFinish c = do
 
 -- | Jobsets hydra is evaluating right now (project, jobset, started ms,
 -- previous eval id).
+-- | Jobsets the evaluator will evaluate next, in the order it starts them
+-- (hydra-evaluator's should_evaluate and start_evals): requested ones by
+-- trigger time, then those whose check interval has elapsed by when they
+-- were last checked.  A one-at-a-time jobset waits until its latest
+-- evaluation's builds are finished.  Each row: project, jobset, requested
+-- (ms, if triggered), last checked (ms), the latest eval's id and how long
+-- it took (s).
+pendingEvals :: Connection -> IO [(Text, Text, Maybe Int64, Maybe Int64, Maybe Int, Maybe Int)]
+pendingEvals c = query_ c
+  "SELECT j.project, j.name, j.triggertime::bigint * 1000, j.lastcheckedtime::bigint * 1000, \
+  \  e.id, e.checkouttime + e.evaltime \
+  \FROM jobsets j JOIN projects p ON p.name = j.project \
+  \LEFT JOIN LATERAL (SELECT id, checkouttime, evaltime FROM jobsetevals \
+  \  WHERE jobset_id = j.id ORDER BY id DESC LIMIT 1) e ON true \
+  \WHERE j.enabled IN (1, 2, 3) AND p.enabled <> 0 AND j.starttime IS NULL \
+  \  AND (j.triggertime IS NOT NULL \
+  \    OR (j.checkinterval > 0 \
+  \      AND coalesce(j.lastcheckedtime, 0) + j.checkinterval <= extract(epoch FROM now()) \
+  \      AND (j.enabled <> 3 OR e.id IS NULL OR NOT EXISTS ( \
+  \        SELECT 1 FROM jobsetevalmembers m JOIN builds b ON b.id = m.build \
+  \        WHERE m.eval = e.id AND b.finished = 0)))) \
+  \ORDER BY j.triggertime NULLS LAST, coalesce(j.lastcheckedtime, 0), j.id"
+
 runningEvals :: Connection -> IO [(Text, Text, Maybe Int64, Maybe Int)]
 runningEvals c = query_ c
   "SELECT j.project, j.name, j.starttime::bigint * 1000, \

@@ -13,6 +13,7 @@ module Hydrometer.Api
   , SlotNow (..)
   , QueueNow (..)
   , EvalNow (..)
+  , PendingEval (..)
   , Alert (..)
   ) where
 
@@ -55,11 +56,16 @@ data NowResponse = NowResponse
   , nMachines :: ![MachineNow]
   , nQueues   :: ![QueueNow]
   , nEvals    :: ![EvalNow]
+  , nPendingEvals :: ![PendingEval]
+    -- ^ In the order the evaluator will start them.
   , nAlerts   :: ![Alert]
   } deriving stock (Show, Eq, Generic)
 
 instance ToJSON NowResponse where toJSON = genericToJSON apiOptions
-instance FromJSON NowResponse where parseJSON = genericParseJSON apiOptions
+-- | @pendingEvals@ defaults to empty, so a newer UI still reads an older server.
+instance FromJSON NowResponse where
+  parseJSON = A.withObject "NowResponse" $ \o ->
+    genericParseJSON apiOptions (A.Object (KM.insertWith (\_ old -> old) "pendingEvals" (A.toJSON ([] :: [A.Value])) o))
 
 data MachineNow = MachineNow
   { mName        :: !Text
@@ -152,6 +158,22 @@ data EvalNow = EvalNow
 
 instance ToJSON EvalNow where toJSON = genericToJSON apiOptions
 instance FromJSON EvalNow where parseJSON = genericParseJSON apiOptions
+
+-- | A jobset the evaluator will evaluate when a slot is free.
+data PendingEval = PendingEval
+  { peProject   :: !Text
+  , peJobset    :: !Text
+  , peRequested :: !(Maybe Int64)
+    -- ^ When an evaluation was requested (epoch ms); Nothing when it is due
+    -- because its check interval elapsed.
+  , peLastChecked :: !(Maybe Int64)
+  , peLastEval  :: !(Maybe Int)
+  , peLastEvalSeconds :: !(Maybe Int)
+    -- ^ How long the jobset's latest evaluation took (checkout + eval).
+  } deriving stock (Show, Eq, Generic)
+
+instance ToJSON PendingEval where toJSON = genericToJSON apiOptions
+instance FromJSON PendingEval where parseJSON = genericParseJSON apiOptions
 
 data Alert = Alert
   { alLevel   :: !Text
