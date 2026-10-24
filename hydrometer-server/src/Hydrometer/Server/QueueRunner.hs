@@ -122,7 +122,10 @@ parseQueues now v = maybe [] id $ flip A.parseMaybe v $ A.withObject "queues" $ 
   where
     field :: A.FromJSON a => Text -> A.Value -> Maybe a
     field k = A.parseMaybe (A.withObject "step" (\s -> s .: K.fromText k))
+    -- The queue keeps entries for steps that have since finished or been
+    -- cancelled (still marked runnable); those are not waiting for anything.
     isWaiting s = field "runnable" s == Just True && field "alreadyScheduled" s /= Just True
+                  && field "finished" s /= Just True && field "cancelled" s /= Just True
     waitMs s = do
       t <- field "runnableSince" s
       since <- iso8601ParseM (T.unpack t) :: Maybe UTCTime
