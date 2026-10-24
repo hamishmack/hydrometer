@@ -14,6 +14,10 @@ module Hydrometer.Api
   , QueueNow (..)
   , EvalNow (..)
   , PendingEval (..)
+  , EvalBlockers (..)
+  , CacheNow (..)
+  , LogPattern (..)
+  , Blocker (..)
   , Alert (..)
   ) where
 
@@ -58,14 +62,22 @@ data NowResponse = NowResponse
   , nEvals    :: ![EvalNow]
   , nPendingEvals :: ![PendingEval]
     -- ^ In the order the evaluator will start them.
+  , nEvalSlots :: !(Maybe Int)
+    -- ^ How many evaluations run at once (hydra-evaluator's
+    -- max_concurrent_evals, as configured).
+  , nCache     :: !(Maybe CacheNow)
+  , nLogPatterns :: ![LogPattern]
+    -- ^ Errors and warnings in hydra's journal in the last 15 minutes.
   , nAlerts   :: ![Alert]
   } deriving stock (Show, Eq, Generic)
 
 instance ToJSON NowResponse where toJSON = genericToJSON apiOptions
--- | @pendingEvals@ defaults to empty, so a newer UI still reads an older server.
+-- | List fields added since the first release default to empty, so a newer
+-- UI still reads an older server.
 instance FromJSON NowResponse where
   parseJSON = A.withObject "NowResponse" $ \o ->
-    genericParseJSON apiOptions (A.Object (KM.insertWith (\_ old -> old) "pendingEvals" (A.toJSON ([] :: [A.Value])) o))
+    genericParseJSON apiOptions $ A.Object $
+      foldr (\k -> KM.insertWith (\_ old -> old) k (A.toJSON ([] :: [A.Value]))) o ["pendingEvals", "logPatterns"]
 
 data MachineNow = MachineNow
   { mName        :: !Text
@@ -154,6 +166,8 @@ data EvalNow = EvalNow
   , eRss      :: !(Maybe Int64)
   , eLastEval :: !(Maybe Int)
     -- ^ The id of the jobset's previous evaluation.
+  , eTypicalSeconds :: !(Maybe Int)
+    -- ^ Median duration of the jobset's last five evaluations.
   } deriving stock (Show, Eq, Generic)
 
 instance ToJSON EvalNow where toJSON = genericToJSON apiOptions
@@ -170,6 +184,8 @@ data PendingEval = PendingEval
   , peLastEval  :: !(Maybe Int)
   , peLastEvalSeconds :: !(Maybe Int)
     -- ^ How long the jobset's latest evaluation took (checkout + eval).
+  , peTypicalSeconds :: !(Maybe Int)
+    -- ^ Median duration of the jobset's last five evaluations.
   } deriving stock (Show, Eq, Generic)
 
 instance ToJSON PendingEval where toJSON = genericToJSON apiOptions
@@ -183,3 +199,83 @@ data Alert = Alert
 
 instance ToJSON Alert where toJSON = genericToJSON apiOptions
 instance FromJSON Alert where parseJSON = genericParseJSON apiOptions
+
+-- | What is holding an evaluation's unfinished builds (@/api/eval/{id}/blockers@).
+data EvalBlockers = EvalBlockers
+  { ebUnfinished :: !Int
+  , ebBuilding   :: !Int
+    -- ^ Builds whose own step is running (or handed to a builder).
+  , ebOrphaned   :: !Int
+    -- ^ Builds whose own step hydra lists as running but no builder has.
+  , ebWaiting    :: !Int
+    -- ^ Builds whose own step is runnable, waiting for a machine.
+  , ebBlocked    :: !Int
+    -- ^ Builds waiting on one of the blockers below.
+  , ebOther      :: !Int
+    -- ^ None of these: not yet in the queue runner, or a dependency failed.
+  , ebBlockers   :: ![Blocker]
+    -- ^ The steps everything waits on, the most builds held first.
+  , ebComputedAt :: !Int64
+  , ebDurationMs :: !Int
+  , ebDrvsRead   :: !Int
+  , ebTruncated  :: !Bool
+    -- ^ The dependency walk stopped early (too many derivations).
+  } deriving stock (Show, Eq, Generic)
+
+instance ToJSON EvalBlockers where toJSON = genericToJSON apiOptions
+instance FromJSON EvalBlockers where parseJSON = genericParseJSON apiOptions
+
+-- | A step that unfinished builds are waiting on.
+data Blocker = Blocker
+  { blDrvPath  :: !Text
+  , blName     :: !Text
+  , blState    :: !Text
+    -- ^ @building@, @scheduled@, @orphaned@ or @waiting@.
+  , blMachine  :: !(Maybe Text)
+  , blSystem   :: !(Maybe Text)
+  , blFeatures :: ![Text]
+  , blSince    :: !(Maybe Int64)
+    -- ^ Started (building, orphaned) or runnable since (waiting), epoch ms.
+  , blReason   :: !(Maybe Text)
+    -- ^ For a waiting step, why no builder takes it, when that is known.
+  , blBuilds   :: !Int
+    -- ^ How many of the evaluation's unfinished builds wait on it.
+  } deriving stock (Show, Eq, Generic)
+
+instance ToJSON Blocker where toJSON = genericToJSON apiOptions
+instance FromJSON Blocker where parseJSON = genericParseJSON apiOptions
+
+-- | Whether finished outputs reach the binary cache.
+data CacheNow = CacheNow
+  { cnUrl      :: !Text
+  , cnChecked  :: !Int64
+  , cnSampled  :: !Int
+    -- ^ Outputs of steps that finished 30-120 minutes before the check.
+  , cnPresent  :: !Int
+    -- ^ Of those, how many the cache has a narinfo for.
+  , cnMissing  :: ![Text]
+  , cnQueued   :: !(Maybe Int)
+    -- ^ Paths in hydra-attic-bridge's queue.
+  , cnRetrying :: !(Maybe Int)
+    -- ^ Of those, how many have failed at least once.
+  , cnStaleNew :: !(Maybe Int)
+    -- ^ Of those, how many were queued over an hour ago and never tried.
+  , cnError    :: !(Maybe Text)
+  } deriving stock (Show, Eq, Generic)
+
+instance ToJSON CacheNow where toJSON = genericToJSON apiOptions
+instance FromJSON CacheNow where parseJSON = genericParseJSON apiOptions
+
+-- | A kind of error or warning line in a systemd unit's journal.
+data LogPattern = LogPattern
+  { lpUnit    :: !Text
+  , lpLevel   :: !Text
+    -- ^ @error@ or @warning@.
+  , lpPattern :: !Text
+  , lpCount   :: !Int
+  , lpExample :: !Text
+  , lpLast    :: !Int64
+  } deriving stock (Show, Eq, Generic)
+
+instance ToJSON LogPattern where toJSON = genericToJSON apiOptions
+instance FromJSON LogPattern where parseJSON = genericParseJSON apiOptions

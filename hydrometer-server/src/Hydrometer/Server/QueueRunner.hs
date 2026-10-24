@@ -3,11 +3,18 @@
 module Hydrometer.Server.QueueRunner
   ( QueueState (..)
   , QrMachine (..)
+  , QrRegistration (..)
+  , QrStep (..)
   , emptyQueueState
+  , queueAsOf
+  , stepOrphaned
   , runQueuePoller
+  , fetchQueueState
   , parseMachines
+  , parseRegistrations
   , mergeByHost
   , parseQueues
+  , parseQueueSteps
   ) where
 
 import Control.Concurrent (threadDelay)
@@ -26,6 +33,7 @@ import Data.Maybe (catMaybes, mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (UTCTime, diffUTCTime, getCurrentTime)
+import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 import Data.Time.Format.ISO8601 (iso8601ParseM)
 import Database.PostgreSQL.Simple
 import Database.PostgreSQL.Simple.Types (PGArray (..))
@@ -52,8 +60,43 @@ data QrMachine = QrMachine
     -- ^ The steps it is running, as .drv basenames (no store directory).
   } deriving stock (Show)
 
+-- | One builder registration, with what decides whether it gets work.
+data QrRegistration = QrRegistration
+  { qrHost        :: !Text
+  , qrSystems     :: ![Text]
+  , qrSupported   :: ![Text]
+  , qrMandatory   :: ![Text]
+  , qrMaxJobs     :: !Int
+  , qrCurrentJobs :: !Int
+  , qrHasCapacity :: !Bool
+  , qrDisabled    :: !Bool
+  , qrStoreFree   :: !(Maybe Double)
+    -- ^ Percent; the builder refuses work below 'qrStoreMin'.
+  , qrStoreMin    :: !(Maybe Double)
+  , qrBuildDirFree :: !(Maybe Double)
+  , qrBuildDirMin :: !(Maybe Double)
+  , qrLoad1       :: !(Maybe Double)
+  , qrLoad1Max    :: !(Maybe Double)
+  } deriving stock (Show)
+
+-- | An entry in the queue runner's per-system queues.
+data QrStep = QrStep
+  { qeDrv       :: !Text
+    -- ^ .drv basename (no store directory).
+  , qeSystem    :: !Text
+  , qeScheduled :: !Bool
+    -- ^ Handed to a builder.
+  , qeWaiting   :: !Bool
+    -- ^ Runnable and not handed to a builder: waiting for a machine.
+  , qeSince     :: !(Maybe UTCTime)
+    -- ^ When it became runnable.
+  } deriving stock (Show)
+
 data QueueState = QueueState
   { qsMachines :: ![QrMachine]
+    -- ^ Merged per host.
+  , qsRegistrations :: ![QrRegistration]
+  , qsSteps    :: ![QrStep]
   , qsQueues   :: ![(Text, Int, Maybe Int64)]
     -- ^ (system, runnable steps waiting for a machine, oldest wait ms)
   , qsPolled   :: !(Maybe UTCTime)
@@ -61,7 +104,25 @@ data QueueState = QueueState
   }
 
 emptyQueueState :: QueueState
-emptyQueueState = QueueState [] [] Nothing Nothing
+emptyQueueState = QueueState [] [] [] [] Nothing Nothing
+
+-- | When the queue runner's job lists can be trusted to judge hydra's busy
+-- steps against: the time (epoch ms) of a successful poll in the last
+-- minute.
+queueAsOf :: Int64 -> QueueState -> Maybe Int64
+queueAsOf now qs = case (qsPolled qs, qsError qs) of
+  (Just t, Nothing) | let ms = round (utcTimeToPOSIXSeconds t * 1000), now - ms < 60000 -> Just ms
+  _ -> Nothing
+
+-- | A step hydra lists as running on @host@ that the queue runner has no
+-- job for there.  Only steps that started well before the poll count, since
+-- a step dispatched after it is not in its list yet.
+stepOrphaned :: Int64 -> QueueState -> Text -> Text -> Maybe Int64 -> Bool
+stepOrphaned now qs host drvPath started = case queueAsOf now qs of
+  Just asOf -> T.takeWhileEnd (/= '/') drvPath `notElem` jobs && maybe False (< asOf - 120000) started
+  Nothing -> False
+  where
+    jobs = concat [ qmJobs m | m <- qsMachines qs, qmName m == host ]
 
 parseMachines :: A.Value -> [QrMachine]
 parseMachines v = maybe [] id $ flip A.parseMaybe v $ A.withObject "status" $ \o -> do
@@ -89,6 +150,32 @@ parseMachines v = maybe [] id $ flip A.parseMaybe v $ A.withObject "status" $ \o
         <*> stat "currentDownloadingPathCount"
         <*> (mapMaybe (A.parseMaybe A.parseJSON) <$> m .:? "jobs" .!= ([] :: [A.Value]))
 
+parseRegistrations :: A.Value -> [QrRegistration]
+parseRegistrations v = maybe [] id $ flip A.parseMaybe v $ A.withObject "status" $ \o -> do
+  ms <- o .: "machines" :: A.Parser A.Object
+  pure $ mapMaybe (\(k, m) -> A.parseMaybe (registration (K.toText k)) m) (KM.toList ms)
+  where
+    registration key = A.withObject "machine" $ \m -> do
+      stats <- m .:? "stats" .!= KM.empty
+      let stat :: A.FromJSON a => Text -> A.Parser (Maybe a)
+          stat k = A.explicitParseFieldMaybe A.parseJSON stats (K.fromText k)
+      disabledUntil <- stat "disabledUntil" :: A.Parser (Maybe Int64)
+      QrRegistration
+        <$> (m .:? "hostname" .!= key)
+        <*> m .:? "systems" .!= []
+        <*> m .:? "supportedFeatures" .!= []
+        <*> m .:? "mandatoryFeatures" .!= []
+        <*> m .:? "maxJobs" .!= 1
+        <*> (maybe 0 id <$> stat "currentJobs")
+        <*> m .:? "hasCapacity" .!= True
+        <*> pure (maybe False (> 0) disabledUntil)
+        <*> stat "storeFreePercent"
+        <*> m .:? "storeAvailThreshold"
+        <*> stat "buildDirFreePercent"
+        <*> m .:? "buildDirAvailThreshold"
+        <*> stat "load1"
+        <*> m .:? "load1Threshold"
+
 -- | One entry per host.  The queue runner lists each builder registration
 -- separately, and a Mac runs two (a darwin builder and a linux one), but
 -- hydra's buildsteps.machine (and everything in hydrometer) is per host.
@@ -109,6 +196,19 @@ mergeByHost ms = map (foldl1' merge) (M.elems (M.fromListWith (flip (++)) [ (qmN
       , qmDownloading = (+) <$> qmDownloading a <*> qmDownloading b
       , qmJobs = qmJobs a ++ qmJobs b
       }
+
+-- | Every queue entry.
+parseQueueSteps :: A.Value -> [QrStep]
+parseQueueSteps v = maybe [] id $ flip A.parseMaybe v $ A.withObject "queues" $ \o -> do
+  qs <- o .: "queues" :: A.Parser (KM.KeyMap [A.Value])
+  pure [ QrStep d (K.toText k) (field "alreadyScheduled" s == Just True) (isWaiting s)
+                (field "runnableSince" s >>= iso8601ParseM . T.unpack)
+       | (k, steps) <- KM.toList qs, s <- steps, Just d <- [field "drvPath" s] ]
+  where
+    field :: A.FromJSON a => Text -> A.Value -> Maybe a
+    field k = A.parseMaybe (A.withObject "step" (\s -> s .: K.fromText k))
+    isWaiting s = field "runnable" s == Just True && field "alreadyScheduled" s /= Just True
+                  && field "finished" s /= Just True && field "cancelled" s /= Just True
 
 -- | Steps that are runnable (all dependencies built) and not yet
 -- scheduled on a machine, per system.
@@ -131,6 +231,18 @@ parseQueues now v = maybe [] id $ flip A.parseMaybe v $ A.withObject "queues" $ 
       since <- iso8601ParseM (T.unpack t) :: Maybe UTCTime
       pure (round (realToFrac (diffUTCTime now since) * 1000 :: Double))
 
+-- | Poll the queue runner once, without recording anything.
+fetchQueueState :: Manager -> Text -> IO QueueState
+fetchQueueState mgr base = do
+  let get path = do
+        req <- parseRequest (T.unpack base <> path)
+        resp <- httpLbs req { responseTimeout = responseTimeoutMicro 20000000 } mgr
+        either fail pure (A.eitherDecode (responseBody resp))
+  mv <- get "/status/machines"
+  qv <- get "/status/queues"
+  now <- getCurrentTime
+  pure (QueueState (mergeByHost (parseMachines mv)) (parseRegistrations mv) (parseQueueSteps qv) (parseQueues now qv) (Just now) Nothing)
+
 runQueuePoller :: Db -> Manager -> Text -> TVar QueueState -> IO ()
 runQueuePoller d mgr base st = forever $ do
   r <- try pollOnce :: IO (Either SomeException ())
@@ -151,7 +263,7 @@ runQueuePoller d mgr base st = forever $ do
       now <- getCurrentTime
       let ms = mergeByHost (parseMachines mv)
           qs = parseQueues now qv
-      atomically $ writeTVar st (QueueState ms qs (Just now) Nothing)
+      atomically $ writeTVar st (QueueState ms (parseRegistrations mv) (parseQueueSteps qv) qs (Just now) Nothing)
       withTx d $ \c -> do
         void $ executeMany c
           "INSERT INTO hydrometer.machine_status_samples VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING"

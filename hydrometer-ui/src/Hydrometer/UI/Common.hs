@@ -15,6 +15,7 @@ module Hydrometer.UI.Common
   , fmtFixed
   , fmtTime
   , fmtAgo
+  , utcMs
   , shortDrv
   , tableWidget
   , chartWidget
@@ -125,6 +126,9 @@ fmtDuration s
 
 fmtTime :: Int64 -> Text
 fmtTime ms = T.pack (formatTime defaultTimeLocale "%m-%d %H:%M" (posixSecondsToUTCTime (fromIntegral ms / 1000)))
+
+utcMs :: UTCTime -> Int64
+utcMs t = round (utcTimeToPOSIXSeconds t * 1000)
 
 fmtAgo :: UTCTime -> Int64 -> Text
 fmtAgo t ms = fmtDuration (realToFrac (utcTimeToPOSIXSeconds t) - fromIntegral ms / 1000)

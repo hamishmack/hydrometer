@@ -77,6 +77,7 @@ migrations :: [(Int, ByteString)]
 migrations =
   [ (1, $(embedFile "sql/001_init.sql"))
   , (2, $(embedFile "sql/002_builders.sql"))
+  , (3, $(embedFile "sql/003_cache_logs.sql"))
   ]
 
 viewsSql :: ByteString

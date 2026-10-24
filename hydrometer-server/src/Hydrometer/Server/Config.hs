@@ -36,6 +36,14 @@ data Config = Config
     -- ^ Days of raw samples to keep (default 14).  Minute rollups and run
     -- totals are kept for a year.
   , pollSeconds   :: Maybe Int
+  , cacheUrl      :: Maybe Text
+    -- ^ The binary cache finished outputs should reach, e.g.
+    -- @https://cache.zw3rk.com@; recent outputs are checked against it.
+  , logUnits      :: Maybe [Text]
+    -- ^ systemd units whose journal is scanned for errors and warnings.
+  , maxConcurrentEvals :: Maybe Int
+    -- ^ hydra-evaluator's max_concurrent_evals (default 1), for the
+    -- pending evaluations' estimated start times.
   } deriving stock (Show, Generic)
 
 instance FromJSON Config

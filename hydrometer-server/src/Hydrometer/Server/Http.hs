@@ -8,7 +8,7 @@ module Hydrometer.Server.Http
   , apiIndex
   ) where
 
-import Control.Concurrent.STM (TVar)
+import Control.Concurrent.STM (TVar, readTVarIO)
 import Control.Exception (SomeException, displayException, try)
 import Control.Monad (unless)
 import Data.Aeson ((.=))
@@ -30,6 +30,8 @@ import System.FilePath (dropTrailingPathSeparator, takeFileName, (</>))
 import System.IO (IOMode (..), withBinaryFile)
 import Text.Read (readMaybe)
 
+import Hydrometer.Api (CacheNow)
+import Hydrometer.Server.Blockers (BlockerEnv, evalBlockers)
 import Hydrometer.Server.Db
 import Hydrometer.Server.Ingest (AgentState)
 import Hydrometer.Server.Now (buildNow)
@@ -41,6 +43,9 @@ data Env = Env
   , envAgents :: TVar (Map Text AgentState)
   , envQueue  :: TVar QueueState
   , envStatic :: Maybe FilePath
+  , envBlockers :: BlockerEnv
+  , envCache  :: TVar (Maybe CacheNow)
+  , envEvalSlots :: Maybe Int
   }
 
 -- | A machine-readable description of the endpoints (served at /api).
@@ -56,6 +61,7 @@ apiIndex = A.object
       , "GET /api/farm?from&to" .= ("Farm-wide CPU utilisation, network, concurrent builds and runnable queue depth over time." :: Text)
       , "GET /api/evals?limit" .= ("Recent evaluations with build progress, and the jobsets being evaluated now." :: Text)
       , "GET /api/eval/{id}" .= ("One evaluation: summary (time split into import/build/upload, CPU), timeline of running steps vs unfinished builds, and its longest steps." :: Text)
+      , "GET /api/eval/{id}/blockers" .= ("What an evaluation's unfinished builds wait on: counts by state, and the steps holding the most builds, with why runnable ones are not dispatched." :: Text)
       , "GET /api/build/{id}" .= ("The steps of one build with their resource use." :: Text)
       , "GET /api/step/{build}/{stepnr}/series" .= ("CPU cores, memory and network of one step over its life." :: Text)
       ]
@@ -88,7 +94,7 @@ app env req respond = do
 
     route = \case
       ["api"] -> ok apiIndex
-      ["api", "now"] -> withConn db (\c -> buildNow c (envAgents env) (envQueue env)) >>= ok
+      ["api", "now"] -> withConn db (\c -> buildNow c (envAgents env) (envQueue env) (envBlockers env) (envCache env) (envEvalSlots env)) >>= ok
       ["api", "machine", m, "series"] -> range >>= \tr -> withConn db (\c -> machineSeries c m tr) >>= ok
       ["api", "machine", m, "steps"] -> range >>= \tr -> withConn db (\c -> machineSteps c m tr) >>= ok
       ["api", "top"] -> range >>= \tr -> withConn db (\c ->
@@ -104,12 +110,15 @@ app env req respond = do
           pure (A.object
             [ "evals" .= t
             , "running" .= [ A.object ["project" .= p, "jobset" .= j, "started" .= s, "previousEval" .= e]
-                           | (p, j, s, e) <- running ] ])) >>= ok
+                           | (p, j, s, e, _) <- running ] ])) >>= ok
       ["api", "eval", i] | Just eid <- readMaybe (T.unpack i) -> withConn db (\c -> do
           s <- evalSummary c eid
           tl <- evalTimeline c eid
           st <- evalSteps c eid 200
           pure (A.object ["summary" .= s, "timeline" .= tl, "steps" .= st])) >>= ok
+      ["api", "eval", i, "blockers"] | Just eid <- readMaybe (T.unpack i) -> do
+          qs <- readTVarIO (envQueue env)
+          withConn db (\c -> evalBlockers (envBlockers env) c qs eid) >>= ok
       ["api", "build", i] | Just bid <- readMaybe (T.unpack i) -> withConn db (\c -> buildSteps c bid) >>= ok
       ["api", "step", b, s, "series"] | Just bid <- readMaybe (T.unpack b), Just sn <- readMaybe (T.unpack s) ->
           withConn db (\c -> stepSeries c bid sn) >>= ok

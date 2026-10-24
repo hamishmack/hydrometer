@@ -18,10 +18,14 @@ common warnings
 library
   import:           warnings
   hs-source-dirs:   src
-  exposed-modules:  Hydrometer.Server.Config
+  exposed-modules:  Hydrometer.Server.Blockers
+                    Hydrometer.Server.CacheHealth
+                    Hydrometer.Server.Config
                     Hydrometer.Server.Db
+                    Hydrometer.Server.Drv
                     Hydrometer.Server.Http
                     Hydrometer.Server.Ingest
+                    Hydrometer.Server.Logs
                     Hydrometer.Server.Main
                     Hydrometer.Server.Maintain
                     Hydrometer.Server.Mcp
@@ -39,6 +43,7 @@ library
                   , directory
                   , filepath
                   , http-client
+                  , http-client-tls
                   , http-types
                   , postgresql-simple
                   , process

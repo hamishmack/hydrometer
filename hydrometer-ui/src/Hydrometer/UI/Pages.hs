@@ -63,6 +63,9 @@ nowPage = mdo
           (T.intercalate " · " [ qSystem q <> " " <> showT (qRunnable q)
                                    <> maybe "" (\w -> " (" <> fmtDuration (fromIntegral w / 1000) <> ")") (qOldestRunnableMs q)
                                | q <- waiting ])
+        forM_ (nCache n) $ \cn -> statSub "Cache uploads"
+          (if cnSampled cn == 0 then "–" else showT (cnPresent cn) <> " / " <> showT (cnSampled cn))
+          (maybe "recent outputs on cache" (\q -> "on cache · queue " <> showT q) (cnQueued cn))
         statSub "Evaluating" (showT (length (nEvals n)))
           (let k = length (nPendingEvals n) in if k == 0 then "" else showT k <> " pending")
       when (not (null (nEvals n) && null (nPendingEvals n))) $ do
@@ -78,7 +81,16 @@ nowPage = mdo
             elClass "div" "muted oneline" $ forM_ (eLastEval e) $ \i -> do
               text "previous: "
               elAttr "a" ("href" =: ("#/eval/" <> showT i)) (text ("eval " <> showT i))
-          when (not (null (nPendingEvals n))) $ pendingCard clock (nPendingEvals n)
+          when (not (null (nPendingEvals n))) $ pendingCard clock (nEvals n) (fromMaybe 1 (nEvalSlots n)) (nPendingEvals n)
+      when (not (null (nLogPatterns n))) $ do
+        el "h3" (text "Hydra log errors and warnings (15 min)")
+        elClass "div" "scroll" $ elClass "table" "data" $ do
+          el "thead" $ el "tr" $ mapM_ (el "th" . text) ["count", "unit", "level", "message"]
+          el "tbody" $ forM_ (nLogPatterns n) $ \l -> el "tr" $ do
+            elClass "td" "num" (text (showT (lpCount l)))
+            el "td" (text (lpUnit l))
+            el "td" $ elClass "span" ("tag level-" <> lpLevel l) (text (lpLevel l))
+            elAttr "td" ("class" =: "mono" <> "title" =: lpExample l) (text (lpPattern l))
       el "h3" (text "Machines")
       elClass "div" "grid" $ leftmost <$> mapM (machineCard clock (current openD)) ms
   pure ()
@@ -94,8 +106,8 @@ cpuGauge frac v sub = elAttr "div" ("class" =: "stat gauge" <> "title" =: ("CPU 
     elClass "div" "s" (text sub)
 
 -- | The evaluator's queue, in the order it will start the evaluations.
-pendingCard :: W t m => Dynamic t UTCTime -> [PendingEval] -> m ()
-pendingCard clock ps = elClass "div" "card pending" $ do
+pendingCard :: W t m => Dynamic t UTCTime -> [EvalNow] -> Int -> [PendingEval] -> m ()
+pendingCard clock running slots ps = elClass "div" "card pending" $ do
   elClass "div" "title" $ do
     elClass "span" "name" (text "Pending")
     elClass "span" "sub" (text (showT (length ps) <> " waiting, in start order"))
@@ -106,8 +118,33 @@ pendingCard clock ps = elClass "div" "card pending" $ do
       case peRequested p of
         Just t -> el "span" $ dynText (ffor clock (\c -> "requested " <> fmtAgo c t <> " ago"))
         Nothing -> el "span" (text "check interval elapsed")
-      forM_ (peLastEvalSeconds p) $ \s -> el "span" (text ("last eval took " <> fmtDuration (fromIntegral s)))
+      forM_ (peTypicalSeconds p) $ \s -> el "span" (text ("usually takes " <> fmtDuration (fromIntegral s)))
       forM_ (peLastEval p) $ \i -> elAttr "a" ("href" =: ("#/eval/" <> showT i)) (text ("eval " <> showT i))
+    forM_ (M.lookup (peProject p, peJobset p) estimates) $ \(start, finish) -> elClass "div" "meta estimate" $
+      el "span" $ dynText $ ffor clock $ \c ->
+        let nowMs = utcMs c
+            rel t = if t <= nowMs then "now" else "in " <> fmtDuration (fromIntegral (t - nowMs) / 1000)
+        in "≈ starts " <> rel start <> maybe "" (\f -> ", done " <> rel f) finish
+  where
+    -- Simulated in start order: each pending evaluation takes the slot that
+    -- frees first.  Running ones free theirs after their typical duration.
+    -- Unknown durations end the estimate there.
+    estimates = M.fromList (go initialSlots ps)
+      where
+        initialSlots = take (max 1 slots)
+          ([ (\d -> s + fromIntegral d * 1000) <$> eTypicalSeconds e | e <- running, Just s <- [eStarted e] ]
+           ++ repeat (Just 0))
+        go _ [] = []
+        go free (p : rest) = case minimumMaybe free of
+          Nothing -> []
+          Just (i, t0) ->
+            let finish = (\d -> t0 + fromIntegral d * 1000) <$> peTypicalSeconds p
+            in ((peProject p, peJobset p), (t0, finish)) : go (replaceAt i finish free) rest
+        -- The earliest known free time, or Nothing once any slot's is unknown.
+        minimumMaybe xs = case sequence xs of
+          Just ts | not (null ts) -> Just (snd (minimum [ (t, (i, t)) | (i, t) <- zip [0 :: Int ..] ts ]))
+          _ -> Nothing
+        replaceAt i v xs = [ if j == i then v else x | (j, x) <- zip [0 ..] xs ]
 
 meterRow :: DomBuilder t m => Text -> Maybe Double -> Text -> m ()
 meterRow label frac val = do
@@ -304,6 +341,13 @@ evalPage eid = do
         stat "CPU (measured)" (maybe "–" (\h -> fmtNum h <> " h") (numOf "cpu_h"))
     Just _ -> elClass "div" "muted" (text "No such evaluation.")
     Nothing -> loading
+  el "h3" (text "What the unfinished builds wait on")
+  clock <- clockDyn
+  bD <- fetchDyn (Just 60) (constDyn ("api/eval/" <> showT eid <> "/blockers")) :: m (Dynamic t (Maybe EvalBlockers))
+  dyn_ $ ffor bD $ \case
+    Nothing -> loading
+    Just b | ebUnfinished b == 0 -> elClass "p" "muted" (text "Every build of this evaluation has finished.")
+           | otherwise -> blockersView clock b
   el "h3" (text "Timeline: steps running vs builds unfinished")
   elClass "p" "muted" (text "Where builds remain unfinished but few of this evaluation's steps run, it is waiting: for machines (see Bottlenecks), for dependencies being built for other evaluations, or for a stalled queue runner.")
   chartWidget "chart" "line" $ ffor (field "timeline" :: Dynamic t (Maybe Series)) $ fmap $ \s -> (s, A.object
@@ -311,6 +355,35 @@ evalPage eid = do
     , "axes" .= A.object ["unfinished_builds" .= (1 :: Int)], "unit" .= ("" :: Text), "unit2" .= ("" :: Text) ])
   el "h3" (text "Longest steps")
   tableWidget ["busy"] (field "steps")
+
+-- | Unfinished builds by what they wait on, and the steps holding most.
+blockersView :: W t m => Dynamic t UTCTime -> EvalBlockers -> m ()
+blockersView clock b = do
+  elClass "div" "stats" $ do
+    statSub "Unfinished" (showT (ebUnfinished b)) ""
+    statSub "Building" (showT (ebBuilding b)) "own step running"
+    statSub "Orphaned" (showT (ebOrphaned b)) "own step lost"
+    statSub "Waiting for a machine" (showT (ebWaiting b)) "own step runnable"
+    statSub "Waiting on dependencies" (showT (ebBlocked b)) "see the steps below"
+    statSub "Other" (showT (ebOther b)) "not queued, or dep failed"
+  if null (ebBlockers b) then blank else elClass "div" "scroll" $ elClass "table" "data" $ do
+    el "thead" $ el "tr" $ mapM_ (el "th" . text) ["builds held", "step", "state", "where", "since", "why it is not moving"]
+    el "tbody" $ forM_ (ebBlockers b) $ \x -> el "tr" $ do
+      elClass "td" "num" (text (showT (blBuilds x)))
+      elAttr "td" ("class" =: "mono" <> "title" =: blDrvPath x) (text (blName x))
+      el "td" $ elClass "span" ("tag state-" <> blState x) (text (blState x))
+      el "td" $ text $ case blMachine x of
+        Just m -> m
+        Nothing -> maybe "" id (blSystem x) <> (if null (blFeatures x) then "" else " (" <> T.intercalate ", " (blFeatures x) <> ")")
+      el "td" $ forM_ (blSince x) $ \s -> dynText (ffor clock (\c -> fmtAgo c s <> " ago"))
+      elClass "td" "reason" $ text $ case (blState x, blReason x) of
+        (_, Just r) -> r
+        ("orphaned", _) -> "the queue runner lost it; restarting hydra-queue-runner requeues it"
+        ("waiting", _) -> "a builder that can take it has capacity: it should be dispatched soon"
+        _ -> ""
+  elClass "p" "muted" $ text $ "Worked out from " <> showT (ebDrvsRead b) <> " derivations in "
+    <> fmtDuration (fromIntegral (ebDurationMs b) / 1000)
+    <> (if ebTruncated b then " (stopped early: too many derivations; counts are incomplete)" else "") <> "."
 
 buildPage :: forall t m. W t m => Int -> m ()
 buildPage bid = do

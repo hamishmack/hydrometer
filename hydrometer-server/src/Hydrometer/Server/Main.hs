@@ -13,15 +13,19 @@ import Data.String (fromString)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Network.HTTP.Client (defaultManagerSettings, managerConnCount, newManager)
+import Network.HTTP.Client.TLS (newTlsManager)
 import Network.Wai.Handler.Warp qualified as Warp
 import System.Environment (getArgs)
 import System.Exit (exitFailure)
 import System.IO (hPutStrLn, stderr)
 
+import Hydrometer.Server.Blockers (evalBlockers, newBlockerEnv)
+import Hydrometer.Server.CacheHealth (runCacheMonitor)
 import Hydrometer.Server.Config
 import Hydrometer.Server.Db
 import Hydrometer.Server.Http
 import Hydrometer.Server.Ingest
+import Hydrometer.Server.Logs (journalPatterns, runLogScanner)
 import Hydrometer.Server.Maintain
 import Hydrometer.Server.Mcp
 import Hydrometer.Server.QueueRunner
@@ -34,6 +38,8 @@ usage = unlines
   , "  migrate               create/upgrade the hydrometer schema and exit"
   , "  mcp                   Model Context Protocol server on stdio (for AI agents)"
   , "  query SQL             run read-only SQL and print {columns, rows} as JSON"
+  , "  blockers EVAL_ID      what an evaluation's unfinished builds wait on, as JSON"
+  , "  log-patterns SINCE UNIT...  errors and warnings in the units' journal since SINCE (e.g. -1h)"
   , "  ingest MACHINE FILE   load a saved agent /samples response (for testing)"
   ]
 
@@ -66,7 +72,10 @@ run cmd cfg rest = case (cmd, rest) of
     queue <- newTVarIO emptyQueueState
     let (host, port) = listenAddr cfg
         pollSec = fromMaybe 5 (pollSeconds cfg)
-        env = Env d agentStates queue (static cfg)
+    benv <- newBlockerEnv
+    cacheState <- newTVarIO Nothing
+    tlsMgr <- newTlsManager
+    let env = Env d agentStates queue (static cfg) benv cacheState (maxConcurrentEvals cfg)
         settings = Warp.setHost (fromString host) (Warp.setPort port Warp.defaultSettings)
     hPutStrLn stderr ("hydrometer serving on " <> host <> ":" <> show port)
     mapConcurrently_ id $
@@ -74,6 +83,8 @@ run cmd cfg rest = case (cmd, rest) of
       , runMaintenance d (fromMaybe 14 (retentionDays cfg)) ]
       ++ [ runQueuePoller d mgr qr queue | Just qr <- [queueRunner cfg] ]
       ++ [ runAgentPoller d mgr pollSec agentStates a | a <- agents cfg ]
+      ++ [ runCacheMonitor d tlsMgr u cacheState | Just u <- [cacheUrl cfg] ]
+      ++ [ runLogScanner d us | Just us@(_ : _) <- [logUnits cfg] ]
   ("mcp", []) -> do
     d <- openDb (fromMaybe (db cfg) (readOnlyDb cfg)) 1
     let (host, port) = listenAddr cfg
@@ -84,6 +95,16 @@ run cmd cfg rest = case (cmd, rest) of
     d <- openDb (fromMaybe (db cfg) (readOnlyDb cfg)) 1
     t <- withConn d (\c -> queryTableReadOnly c 60000 10000 (T.pack sql))
     BLC.putStrLn (A.encode t)
+  ("blockers", [eid]) | [(i, "")] <- reads eid -> do
+    d <- openDb (fromMaybe (db cfg) (readOnlyDb cfg)) 1
+    mgr <- newManager defaultManagerSettings
+    qs <- maybe (pure emptyQueueState) (fetchQueueState mgr) (queueRunner cfg)
+    benv <- newBlockerEnv
+    r <- withConn d (\c -> evalBlockers benv c qs i)
+    BLC.putStrLn (A.encode r)
+  ("log-patterns", since : units@(_ : _)) -> do
+    ps <- journalPatterns (map T.pack units) since
+    mapM_ (\(u, l, p, n, ex) -> putStrLn (show n <> "\t" <> T.unpack u <> "\t" <> T.unpack l <> "\t" <> T.unpack p <> "\n\t  e.g. " <> T.unpack (T.take 200 ex))) ps
   ("ingest", [machine, file]) -> do
     d <- openDb (db cfg) 1
     sr <- either fail pure =<< A.eitherDecodeFileStrict file

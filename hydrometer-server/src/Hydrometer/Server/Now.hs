@@ -14,11 +14,12 @@ import Data.Set qualified as S
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (getCurrentTime)
-import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 import Database.PostgreSQL.Simple (Connection)
 
 import Hydrometer.Api
+import Hydrometer.Server.Blockers (BlockerEnv, waitingAlerts)
 import Hydrometer.Server.Db (epochMs)
+import Hydrometer.Server.Logs (recentLogPatterns)
 import Hydrometer.Server.Ingest (AgentState (..))
 import Hydrometer.Server.Queries (busySteps, lastStepFinish, pendingEvals, runningEvals)
 import Hydrometer.Server.QueueRunner
@@ -33,24 +34,24 @@ cpuUtil h =
 perSecond :: HostStats -> Int64 -> Maybe Double
 perSecond h v = if hIntervalMs h <= 0 then Nothing else Just (fromIntegral v * 1000 / fromIntegral (hIntervalMs h))
 
-buildNow :: Connection -> TVar (Map Text AgentState) -> TVar QueueState -> IO NowResponse
-buildNow c agentsVar queueVar = do
+buildNow
+  :: Connection -> TVar (Map Text AgentState) -> TVar QueueState -> BlockerEnv
+  -> TVar (Maybe CacheNow) -> Maybe Int -> IO NowResponse
+buildNow c agentsVar queueVar benv cacheVar evalSlots = do
   agents <- readTVarIO agentsVar
   qs <- readTVarIO queueVar
   now <- epochMs <$> getCurrentTime
   steps <- busySteps c
   evals <- runningEvals c
   pending <- pendingEvals c
+  cache <- readTVarIO cacheVar
+  logs <- recentLogPatterns c
+  waitAlerts <- waitingAlerts benv qs =<< getCurrentTime
   lastFinish <- lastStepFinish c
   let qrByName = M.fromList [ (qmName m, m) | m <- qsMachines qs ]
       stepsByMachine = M.fromListWith (++) [ (m, [s]) | s@(m, _, _, _, _, _, _, _, _, _) <- steps ]
       names = S.toList (S.fromList (M.keys agents ++ M.keys qrByName ++ filter (not . T.null) (M.keys stepsByMachine)))
-      -- When the queue runner's job lists can be trusted to judge hydra's
-      -- busy steps against: a recent, successful poll.
-      qrAsOf = case (qsPolled qs, qsError qs) of
-        (Just t, Nothing) | let ms = round (utcTimeToPOSIXSeconds t * 1000), now - ms < 60000 -> Just ms
-        _ -> Nothing
-      machines = map (machineNow agents qrByName qrAsOf stepsByMachine) names
+      machines = map (machineNow agents qrByName (stepOrphaned now qs) stepsByMachine) names
       queues = [ QueueNow sys n w | (sys, n, w) <- qsQueues qs, n > 0 || sys `elem` activeSystems ]
       activeSystems = concatMap mSystems machines
       evalRuns = [ (rName r, r, h) | AgentState { asLatest = Just s } <- M.elems agents
@@ -60,13 +61,13 @@ buildNow c agentsVar queueVar = do
             { eProject = p, eJobset = j, eStarted = st
             , eCores = (\(_, r, h) -> fromIntegral (rCpuMs r) / fromIntegral (max 1 (hIntervalMs h))) <$> er
             , eRss = (\(_, r, _) -> rFootprint r) <$> er
-            , eLastEval = prev }
-        | (p, j, st, prev) <- evals
+            , eLastEval = prev, eTypicalSeconds = typ }
+        | (p, j, st, prev, typ) <- evals
         , let er = listToMaybe [ x | x@(n, _, _) <- evalRuns, n == p <> ":" <> j ] ]
       pendingNow =
         [ PendingEval { peProject = p, peJobset = j, peRequested = rq, peLastChecked = lc
-                      , peLastEval = le, peLastEvalSeconds = ls }
-        | (p, j, rq, lc, le, ls) <- pending ]
+                      , peLastEval = le, peLastEvalSeconds = ls, peTypicalSeconds = typ }
+        | (p, j, rq, lc, le, ls, typ) <- pending ]
       -- How long the longest-waiting requested evaluation has waited.
       oldestRequest = case [ now - t | Just t <- map peRequested pendingNow ] of
         [] -> Nothing
@@ -89,6 +90,14 @@ buildNow c agentsVar queueVar = do
         ++ [ Alert "critical" (T.pack (show (length pendingNow)) <> " evaluations are pending, the oldest requested "
               <> T.pack (show (w `div` 60000)) <> " minutes ago, but none is running: hydra-evaluator may be stalled.")
            | null evals, Just w <- [oldestRequest], w > 10 * 60000 ]
+        ++ waitAlerts
+        ++ [ Alert "warning" ("Only " <> T.pack (show (cnPresent cn)) <> " of " <> T.pack (show (cnSampled cn))
+              <> " outputs built 30-120 minutes ago are on " <> cnUrl cn <> ".")
+           | Just cn <- [cache], cnSampled cn >= 5, cnPresent cn * 10 < cnSampled cn * 8 ]
+        ++ [ Alert "warning" (T.pack (show n) <> " paths have waited over an hour in hydra-attic-bridge's queue without being tried.")
+           | Just cn <- [cache], Just n <- [cnStaleNew cn], n > 100 ]
+        ++ [ Alert "warning" (lpUnit l <> " logged " <> T.pack (show (lpCount l)) <> " errors like \"" <> lpPattern l <> "\" in the last 15 minutes.")
+           | l <- logs, lpLevel l == "error", lpCount l >= 30 ]
         ++ [ Alert "warning" ("Queue runner status unavailable: " <> e) | Just e <- [qsError qs] ]
         ++ [ Alert "warning" ("Agent on " <> n <> " is not answering: " <> T.take 200 e)
            | (n, a) <- M.toList agents, Just e <- [asError a] ]
@@ -101,13 +110,14 @@ buildNow c agentsVar queueVar = do
       pct a b = T.pack (show (a * 100 `div` max 1 b)) <> "%"
   pure NowResponse
     { nTime = now, nMachines = machines, nQueues = sortOn qSystem queues
-    , nEvals = evalsNow, nPendingEvals = pendingNow, nAlerts = alerts }
+    , nEvals = evalsNow, nPendingEvals = pendingNow, nEvalSlots = evalSlots
+    , nCache = cache, nLogPatterns = logs, nAlerts = alerts }
 
 machineNow
-  :: Map Text AgentState -> Map Text QrMachine -> Maybe Int64
+  :: Map Text AgentState -> Map Text QrMachine -> (Text -> Text -> Maybe Int64 -> Bool)
   -> Map Text [(Text, Int, Int, Text, Text, Text, Text, Text, Maybe Text, Maybe Int64)]
   -> Text -> MachineNow
-machineNow agents qrByName qrAsOf stepsByMachine name = MachineNow
+machineNow agents qrByName isOrphan stepsByMachine name = MachineNow
   { mName = name
   , mOs = aOs <$> info
   , mCpuCount = aCpuCount <$> info
@@ -151,14 +161,7 @@ machineNow agents qrByName qrAsOf stepsByMachine name = MachineNow
       Just m -> Just (qmMaxJobs m)
       Nothing | null builders -> Nothing
               | otherwise -> Just (sum (map bMaxJobs builders))
-    qrJobs = S.fromList (maybe [] qmJobs qr)
-    -- Hydra lists the step as running here but the queue runner has no such
-    -- job.  Only steps that started well before the poll count, since a
-    -- step dispatched since the poll is not in its list yet.
-    orphaned drvPath started = case qrAsOf of
-      Just asOf -> not (T.takeWhileEnd (/= '/') drvPath `S.member` qrJobs)
-                   && maybe False (< asOf - 120000) started
-      Nothing -> False
+    orphaned = isOrphan name
     hydraSteps = M.findWithDefault [] name stepsByMachine
     runs = maybe [] sRuns latest
     interval = maybe 5000 (hIntervalMs . sHost) latest

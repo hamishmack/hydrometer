@@ -57,6 +57,16 @@ h3 { font-size: 14px; margin: 14px 0 8px; color: var(--muted); text-transform: u
 .card.pending li:last-child { border-bottom: none; }
 .card.pending li .drv { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card.pending li .meta { color: var(--muted); display: flex; gap: 10px; white-space: nowrap; overflow: hidden; }
+.tag.state-orphaned, .tag.level-error { background: #fde8e6; color: #7a1b14; }
+.tag.state-waiting, .tag.level-warning { background: #fff4e0; color: #6b4300; }
+.tag.state-building, .tag.state-scheduled { background: #e2ecfd; color: #1d4fa8; }
+@media (prefers-color-scheme: dark) {
+  .tag.state-orphaned, .tag.level-error { background: #3a1d1b; color: #ffc9c3; }
+  .tag.state-waiting, .tag.level-warning { background: #3a2d14; color: #ffe2ad; }
+  .tag.state-building, .tag.state-scheduled { background: #1e2c47; color: #a9c4f5; }
+}
+table.data td.reason { white-space: normal; min-width: 280px; }
+.card.pending li .meta.estimate { color: var(--accent); }
 .orphans { margin-top: 4px; font-size: 12px; color: var(--muted); }
 .orphans summary { cursor: pointer; color: var(--bad); padding: 4px 0; }
 .orphans .slot { opacity: .65; }

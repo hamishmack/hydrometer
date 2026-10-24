@@ -127,7 +127,8 @@ SELECT
   split_part(b.job, '.', 3) AS job_compiler,
   to_timestamp(s.starttime) AS started,
   to_timestamp(s.stoptime) AS stopped,
-  s.stoptime - s.starttime AS wall_s,
+  -- A queue-runner restart closes leftover busy steps with stopTime 0.
+  CASE WHEN s.stoptime >= s.starttime THEN s.stoptime - s.starttime END AS wall_s,
   s.status, s.busy,
   (s.import_time_ms / 1000.0)::float8 AS import_s,
   (s.build_time_ms / 1000.0)::float8 AS build_s,

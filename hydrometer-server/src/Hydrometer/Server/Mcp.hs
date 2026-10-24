@@ -62,6 +62,8 @@ tools =
       [ ("limit", "number", "default 20") ]
   , tool "explain_eval" "Why an evaluation (e.g. a PR) is taking long: time split into import/build/upload, CPU used, timeline of running steps vs unfinished builds (gaps = waiting for machines or dependencies), and the longest steps."
       [ ("eval_id", "number", "hydra jobsetevals.id") ]
+  , tool "eval_blockers" "Why an evaluation's remaining builds are not finishing: how many are building, orphaned (hydra lists them running, no builder has them), runnable but waiting for a machine, or waiting on dependencies, and the steps holding the most builds, with why runnable ones are not dispatched (e.g. no builder offers a required feature, or the ones that do have no capacity)."
+      [ ("eval_id", "number", "hydra jobsetevals.id") ]
   , tool "explain_build" "The steps of one hydra build with their resource use."
       [ ("build_id", "number", "hydra builds.id") ]
   , tool "schema" "The documented hydrometer views and tables, with column names and descriptions. Read this before writing SQL." []
@@ -147,6 +149,7 @@ callTool env name args = case name of
       pure (A.object ["series_summary" .= summarise series, "steps" .= steps])
   "recent_evals" -> api "/api/evals" [("limit", T.pack (show (num "limit" 20)))]
   "explain_eval" -> api ("/api/eval/" <> T.pack (show (num "eval_id" 0))) []
+  "eval_blockers" -> api ("/api/eval/" <> T.pack (show (num "eval_id" 0)) <> "/blockers") []
   "explain_build" -> api ("/api/build/" <> T.pack (show (num "build_id" 0))) []
   "schema" -> A.toJSON <$> withConn (meDb env) (\c -> queryTableReadOnly c 30000 2000 schemaSql)
   "sql" -> A.toJSON <$> withConn (meDb env) (\c -> queryTableReadOnly c 30000 500 (str "query" ""))

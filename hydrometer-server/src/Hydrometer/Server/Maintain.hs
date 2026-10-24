@@ -87,6 +87,8 @@ retention c days = do
   _ <- query c "SELECT hydrometer.drop_partitions_before((current_date - ?::int))" (Only days) :: IO [Only Int]
   void $ execute c "DELETE FROM hydrometer.machine_status_samples WHERE t < now() - make_interval(days => ?)" (Only days)
   void $ execute c "DELETE FROM hydrometer.queue_samples WHERE t < now() - make_interval(days => ?)" (Only days)
+  void $ execute c "DELETE FROM hydrometer.log_counts WHERE t < now() - make_interval(days => ?)" (Only days)
+  void $ execute_ c "DELETE FROM hydrometer.cache_samples WHERE t < now() - interval '400 days'"
   void $ execute_ c "DELETE FROM hydrometer.host_minute WHERE t < now() - interval '400 days'"
   void $ execute_ c "DELETE FROM hydrometer.runs WHERE last_seen < now() - interval '400 days'"
 

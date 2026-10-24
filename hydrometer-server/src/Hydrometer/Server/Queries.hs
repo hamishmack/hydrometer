@@ -207,7 +207,7 @@ evalSteps c evalId limit = queryTable c
   "SELECT s.build, s.stepnr, s.job, s.drv_name, s.package, s.platform, s.system, s.machine, \
   \  (extract(epoch FROM s.started) * 1000)::bigint AS started, \
   \  (extract(epoch FROM s.stopped) * 1000)::bigint AS stopped, \
-  \  coalesce(s.wall_s, extract(epoch FROM now() - s.started)::int) AS wall_s, \
+  \  CASE WHEN s.busy <> 0 THEN extract(epoch FROM now() - s.started)::int ELSE s.wall_s END AS wall_s, \
   \  s.status, s.busy, s.import_s, s.build_s, s.upload_s, s.cpu_s, s.avg_cores, s.peak_rss \
   \FROM hydrometer.v_step_usage s \
   \WHERE s.build IN (SELECT build FROM jobsetevalmembers WHERE eval = ?) \
@@ -287,12 +287,12 @@ lastStepFinish c = do
 -- trigger time, then those whose check interval has elapsed by when they
 -- were last checked.  A one-at-a-time jobset waits until its latest
 -- evaluation's builds are finished.  Each row: project, jobset, requested
--- (ms, if triggered), last checked (ms), the latest eval's id and how long
--- it took (s).
-pendingEvals :: Connection -> IO [(Text, Text, Maybe Int64, Maybe Int64, Maybe Int, Maybe Int)]
-pendingEvals c = query_ c
+-- (ms, if triggered), last checked (ms), the latest eval's id, how long it
+-- took and the median of the last five (s).
+pendingEvals :: Connection -> IO [(Text, Text, Maybe Int64, Maybe Int64, Maybe Int, Maybe Int, Maybe Int)]
+pendingEvals c = query_ c $
   "SELECT j.project, j.name, j.triggertime::bigint * 1000, j.lastcheckedtime::bigint * 1000, \
-  \  e.id, e.checkouttime + e.evaltime \
+  \  e.id, e.checkouttime + e.evaltime, " <> typicalEvalSeconds <> " \
   \FROM jobsets j JOIN projects p ON p.name = j.project \
   \LEFT JOIN LATERAL (SELECT id, checkouttime, evaltime FROM jobsetevals \
   \  WHERE jobset_id = j.id ORDER BY id DESC LIMIT 1) e ON true \
@@ -305,8 +305,16 @@ pendingEvals c = query_ c
   \        WHERE m.eval = e.id AND b.finished = 0)))) \
   \ORDER BY j.triggertime NULLS LAST, coalesce(j.lastcheckedtime, 0), j.id"
 
-runningEvals :: Connection -> IO [(Text, Text, Maybe Int64, Maybe Int)]
-runningEvals c = query_ c
+-- | The median duration (checkout + eval, seconds) of the last five
+-- evaluations of the jobset @j@.
+typicalEvalSeconds :: Query
+typicalEvalSeconds =
+  "(SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY x.s)::int FROM \
+  \  (SELECT checkouttime + evaltime AS s FROM jobsetevals \
+  \   WHERE jobset_id = j.id ORDER BY id DESC LIMIT 5) x)"
+
+runningEvals :: Connection -> IO [(Text, Text, Maybe Int64, Maybe Int, Maybe Int)]
+runningEvals c = query_ c $
   "SELECT j.project, j.name, j.starttime::bigint * 1000, \
-  \  (SELECT max(e.id) FROM jobsetevals e WHERE e.jobset_id = j.id) \
+  \  (SELECT max(e.id) FROM jobsetevals e WHERE e.jobset_id = j.id), " <> typicalEvalSeconds <> " \
   \FROM jobsets j WHERE j.starttime IS NOT NULL ORDER BY j.starttime"

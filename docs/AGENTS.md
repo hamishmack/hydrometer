@@ -25,6 +25,7 @@ This is a stdio Model Context Protocol server. For Claude Code, add it to
 | `machine {name, hours}` | One machine's history: a host metrics summary and the steps it ran. |
 | `recent_evals {limit}` | Recent evaluations with progress, and the ones running now. |
 | `explain_eval {eval_id}` | Why is this PR slow? Time split into import, build and upload, a timeline of running steps against unfinished builds, and the longest steps. |
+| `eval_blockers {eval_id}` | What is this evaluation's remainder waiting on? Unfinished builds by state (building, orphaned, waiting for a machine, waiting on dependencies), and the steps holding the most builds, with why runnable ones are not dispatched (no builder offers a required feature, or the ones that do have no capacity, and why). |
 | `explain_build {build_id}` | The steps of a build and what each one cost. |
 | `schema` | Every hydrometer view and table, with column docs. |
 | `sql {query}` | Read-only SQL (30 s timeout, 500 rows). |
@@ -59,6 +60,11 @@ linux-0, or the MCP `sql` tool.
   totals and `build`/`stepnr` once matched.
 - `run_samples`, `host_samples` and `class_samples`: the raw samples.
 - `machine_status_samples` and `queue_samples`: the queue runner's view.
+- `cache_samples`: every 10 minutes, how many outputs of steps that finished
+  30-120 minutes earlier were on the binary cache, and hydra-attic-bridge's
+  queue (paths queued, retrying, never tried after an hour).
+- `log_counts`: per minute, errors and warnings in hydra's journal, grouped by
+  message pattern, with an example line.
 
 **Functions**: `hydrometer.drv_name(drvpath)` and
 `hydrometer.classify_drv(drvpath)`, which returns package, kind, component,
@@ -122,8 +128,16 @@ GROUP BY 1, 2, 3, 4, 5 HAVING sum(rs.cpu_ms) < 1000 ORDER BY running DESC;
 
 - `/api/now`, `/api/top`, `/api/bottlenecks`, `/api/farm`
 - `/api/machine/{name}/series`, `/api/machine/{name}/steps`
-- `/api/evals`, `/api/eval/{id}`, `/api/build/{id}`
+- `/api/evals`, `/api/eval/{id}`, `/api/eval/{id}/blockers`, `/api/build/{id}`
 - `/api/step/{build}/{stepnr}/series`
+
+`/api/now` also carries `pendingEvals` (in the order hydra-evaluator will
+start them), `cache` (the latest cache check) and `logPatterns` (journal errors
+and warnings of the last 15 minutes).
+
+On linux-0, `hydrometer blockers EVAL_ID` prints the blocker analysis and
+`hydrometer log-patterns -1h hydra-queue-runner-dev ...` the journal patterns
+(this one needs journal access, e.g. sudo).
 
 Times are epoch milliseconds. A negative `from` means "that many ms ago".
 Tables are `{columns, rows}`; series are `{time, stepMs, series}`.
