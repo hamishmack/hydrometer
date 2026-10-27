@@ -139,13 +139,19 @@ data SlotNow = SlotNow
     -- ^ Hydra's database lists this step as running, but the queue runner
     -- has no such job on the machine: nothing is building it, and its build
     -- waits until the queue runner is restarted.
+  , slPrefetched :: !Bool
+    -- ^ The queue runner sent this step ahead of a free slot (hydra-builder's
+    -- prefetch_factor): its inputs are imported and it is waiting for one of
+    -- the machine's max_jobs slots, so it uses no build slot yet.
   } deriving stock (Show, Eq, Generic)
 
 instance ToJSON SlotNow where toJSON = genericToJSON apiOptions
--- | @orphaned@ defaults to false, so a newer UI still reads an older server.
+-- | @orphaned@ and @prefetched@ default to false, so a newer UI still reads
+-- an older server.
 instance FromJSON SlotNow where
   parseJSON = A.withObject "SlotNow" $ \o ->
-    genericParseJSON apiOptions (A.Object (KM.insertWith (\_ old -> old) "orphaned" (A.Bool False) o))
+    genericParseJSON apiOptions
+      (A.Object (foldr (\k -> KM.insertWith (\_ old -> old) k (A.Bool False)) o ["orphaned", "prefetched"]))
 
 data QueueNow = QueueNow
   { qSystem   :: !Text

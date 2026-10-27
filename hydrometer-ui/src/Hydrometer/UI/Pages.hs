@@ -45,7 +45,7 @@ nowPage = mdo
     Just n -> do
       forM_ (nAlerts n) $ \a -> elClass "div" ("alert " <> alLevel a) (text (alMessage a))
       let ms = nMachines n
-          busySlots = sum [ length (filter (not . slOrphaned) (mSlots m)) | m <- ms ]
+          busySlots = sum [ length (filter (\s -> not (slOrphaned s || slPrefetched s)) (mSlots m)) | m <- ms ]
           slotsTotal = sum [ fromMaybe 0 (mMaxJobs m) | m <- ms ]
           cores = sum [ fromIntegral (fromMaybe 0 (mCpuCount m)) * fromMaybe 0 (mCpuUtil m) | m <- ms ] :: Double
           totalCores = sum [ fromMaybe 0 (mCpuCount m) | m <- ms, isJust (mCpuUtil m) ]
@@ -183,25 +183,31 @@ machineCard clock openB m = elClass "div" "card" $ do
         otherT = if null others then "" else
           "Other: " <> T.intercalate ", " [ k <> " " <> fmtFixed 1 v <> " cores" | (k, v) <- others ]
     elAttr "div" ("class" =: "muted oneline" <> "title" =: otherT) (text otherT)
-  let (orphans, live) = partition slOrphaned (mSlots m)
+  let (orphans, notOrphaned) = partition slOrphaned (mSlots m)
+      (prefetched, live) = partition slPrefetched notOrphaned
+      slotRow s = do
+        elAttr "div" ("class" =: "drv" <> "title" =: fromMaybe (slDrvName s) (slDrvPath s)) $ do
+          forM_ (slKind s) $ \k -> elClass "span" ("tag " <> (if isJust (slBuild s) then k else "ifd")) (text (if isJust (slBuild s) then k else "not a hydra step")) >> text " "
+          when (slPrefetched s) $ elAttr "span" ("class" =: "tag prefetched" <> "title" =: "Inputs imported; waiting for a free slot on this machine (hydra-builder prefetch)") (text "prefetched") >> text " "
+          case slBuild s of
+            Just b -> elAttr "a" ("href" =: ("#/build/" <> showT b)) (text (slDrvName s))
+            Nothing -> text (slDrvName s)
+        elClass "div" "meta" $ do
+          forM_ (slStarted s) $ \st -> el "span" $ dynText (ffor clock (`fmtAgo` st))
+          forM_ (slCores s) $ \c -> el "span" (text (fmtFixed 1 c <> " cores"))
+          forM_ (slRss s) $ \r -> el "span" (text (fmtBytes (fromIntegral r)))
+          forM_ (slNetRxRate s) $ \r -> when (r > 1e5) $ el "span" (text ("↓" <> fmtRate r))
+          forM_ (slJobset s) $ \j -> elAttr "span" ("class" =: "shrink" <> "title" =: j) (text j)
+        forM_ (slJob s) $ \j -> elAttr "div" ("class" =: "job" <> "title" =: j)
+          (text (if T.length j > 90 then "…" <> T.takeEnd 89 j else j))
   elClass "div" "slots" $ do
-    forM_ live $ \s -> elClass "div" "slot" $ do
-      elAttr "div" ("class" =: "drv" <> "title" =: fromMaybe (slDrvName s) (slDrvPath s)) $ do
-        forM_ (slKind s) $ \k -> elClass "span" ("tag " <> (if isJust (slBuild s) then k else "ifd")) (text (if isJust (slBuild s) then k else "not a hydra step")) >> text " "
-        case slBuild s of
-          Just b -> elAttr "a" ("href" =: ("#/build/" <> showT b)) (text (slDrvName s))
-          Nothing -> text (slDrvName s)
-      elClass "div" "meta" $ do
-        forM_ (slStarted s) $ \st -> el "span" $ dynText (ffor clock (`fmtAgo` st))
-        forM_ (slCores s) $ \c -> el "span" (text (fmtFixed 1 c <> " cores"))
-        forM_ (slRss s) $ \r -> el "span" (text (fmtBytes (fromIntegral r)))
-        forM_ (slNetRxRate s) $ \r -> when (r > 1e5) $ el "span" (text ("↓" <> fmtRate r))
-        forM_ (slJobset s) $ \j -> elAttr "span" ("class" =: "shrink" <> "title" =: j) (text j)
-      forM_ (slJob s) $ \j -> elAttr "div" ("class" =: "job" <> "title" =: j)
-        (text (if T.length j > 90 then "…" <> T.takeEnd 89 j else j))
+    forM_ live $ \s -> elClass "div" "slot" (slotRow s)
     let free = fromMaybe 0 (mMaxJobs m) - length [ () | s <- live, isJust (slBuild s) ]
     when (free > 0) $ elClass "div" "slot free" $
       text (showT free <> " free slot" <> (if free == 1 then "" else "s"))
+    -- Steps the queue runner sent ahead of a free slot (hydra-builder's
+    -- prefetch): inputs imported, waiting for one of the slots above.
+    forM_ prefetched $ \s -> elClass "div" "slot prefetched" (slotRow s)
     -- Steps hydra lists as running that no builder is running (see the
     -- alert): collapsed, so they do not bury the real slots.
     if null orphans then pure never else do

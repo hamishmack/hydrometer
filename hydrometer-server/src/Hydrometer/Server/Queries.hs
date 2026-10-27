@@ -17,6 +17,7 @@ module Hydrometer.Server.Queries
   , buildSteps
   , stepSeries
   , busySteps
+  , prefetchedSteps
   , lastStepFinish
   , runningEvals
   , pendingEvals
@@ -269,6 +270,15 @@ busySteps c = query_ c
   \  s.starttime::bigint * 1000 \
   \FROM buildsteps s JOIN builds b ON b.id = s.build JOIN jobsets j ON j.id = b.jobset_id \
   \WHERE s.busy <> 0 AND b.finished = 0"
+
+-- | (build, stepnr) of the busy steps that are waiting for a slot on their
+-- machine (busy = 35, WaitingForLocalSlot): hydra-builder accepts up to
+-- max_jobs * prefetch_factor steps and imports their inputs, but builds only
+-- max_jobs at a time.
+prefetchedSteps :: Connection -> IO [(Int, Int)]
+prefetchedSteps c = query_ c
+  "SELECT s.build, s.stepnr FROM buildsteps s JOIN builds b ON b.id = s.build \
+  \WHERE s.busy = 35 AND b.finished = 0"
 
 -- | When the most recent build step finished (epoch ms).
 lastStepFinish :: Connection -> IO (Maybe Int64)
