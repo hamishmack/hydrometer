@@ -23,6 +23,7 @@ library
                     Hydrometer.Server.Config
                     Hydrometer.Server.Db
                     Hydrometer.Server.Drv
+                    Hydrometer.Server.GcLock
                     Hydrometer.Server.Http
                     Hydrometer.Server.Ingest
                     Hydrometer.Server.Logs
@@ -49,6 +50,7 @@ library
                   , process
                   , stm
                   , text
+                    , unix
                   , time
                   , vector
                   , wai

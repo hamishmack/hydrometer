@@ -1,3 +1,4 @@
+{-# LANGUAGE MultiWayIf #-}
 -- | Why work is not moving: what an evaluation's unfinished builds wait on,
 -- and why runnable steps are not being handed to builders.
 --
@@ -146,7 +147,9 @@ evalBlockers env c qs eid = do
         \WHERE m.eval = ? AND b.finished = 0" (Only eid) :: IO [(Int, Text)]
       busy <- busySteps c
       let busyF = M.fromList
-            [ (drv, Frontier (if stepOrphaned nowMs qs machine drv started then "orphaned" else "building")
+            [ (drv, Frontier (if | stepOrphaned nowMs qs machine drv started -> "orphaned"
+                                 | stepUploading qs machine drv -> "uploading"
+                                 | otherwise -> "building")
                              (Just machine) sys started)
             | (machine, _, _, _, _, _, _, drv, sys, started) <- busy ]
           queueF = M.fromList
@@ -196,11 +199,11 @@ evalBlockers env c qs eid = do
       done <- getCurrentTime
       pure EvalBlockers
         { ebUnfinished = length builds
-        , ebBuilding = count ["building", "scheduled"]
+        , ebBuilding = count ["building", "scheduled", "uploading"]
         , ebOrphaned = count ["orphaned"]
         , ebWaiting = count ["waiting"]
         , ebBlocked = blocked
-        , ebOther = length builds - count ["building", "scheduled", "orphaned", "waiting"] - blocked
+        , ebOther = length builds - count ["building", "scheduled", "uploading", "orphaned", "waiting"] - blocked
         , ebBlockers = blockers
         , ebComputedAt = toMs done
         , ebDurationMs = round (diffUTCTime done now * 1000)

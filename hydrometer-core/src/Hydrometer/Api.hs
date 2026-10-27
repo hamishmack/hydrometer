@@ -143,15 +143,18 @@ data SlotNow = SlotNow
     -- ^ The queue runner sent this step ahead of a free slot (hydra-builder's
     -- prefetch_factor): its inputs are imported and it is waiting for one of
     -- the machine's max_jobs slots, so it uses no build slot yet.
+  , slUploading :: !Bool
+    -- ^ Built; the builder freed its slot and is uploading the outputs to the
+    -- queue runner.  Hydra lists the step as busy until the upload completes.
   } deriving stock (Show, Eq, Generic)
 
 instance ToJSON SlotNow where toJSON = genericToJSON apiOptions
--- | @orphaned@ and @prefetched@ default to false, so a newer UI still reads
--- an older server.
+-- | @orphaned@, @prefetched@ and @uploading@ default to false, so a newer UI
+-- still reads an older server.
 instance FromJSON SlotNow where
   parseJSON = A.withObject "SlotNow" $ \o ->
     genericParseJSON apiOptions
-      (A.Object (foldr (\k -> KM.insertWith (\_ old -> old) k (A.Bool False)) o ["orphaned", "prefetched"]))
+      (A.Object (foldr (\k -> KM.insertWith (\_ old -> old) k (A.Bool False)) o ["orphaned", "prefetched", "uploading"]))
 
 data QueueNow = QueueNow
   { qSystem   :: !Text

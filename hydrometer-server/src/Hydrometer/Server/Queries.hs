@@ -123,17 +123,26 @@ bottleneckSeries :: Connection -> TimeRange -> IO Series
 bottleneckSeries c tr@(TimeRange f t) = do
   let b = max 60 (bucketSeconds tr)
   tbl <- queryTable c
-    "SELECT (extract(epoch FROM date_bin(make_interval(secs => ?), t, '2000-01-01')) * 1000)::bigint AS t, \
-    \  count(*) FILTER (WHERE bottleneck = 'cpu') AS cpu, \
-    \  count(*) FILTER (WHERE bottleneck = 'memory') AS memory, \
-    \  count(*) FILTER (WHERE bottleneck = 'network') AS network, \
-    \  count(*) FILTER (WHERE bottleneck = 'slots') AS slots, \
-    \  count(*) FILTER (WHERE bottleneck = 'scheduler') AS scheduler, \
-    \  count(*) FILTER (WHERE bottleneck = 'starved') AS starved, \
-    \  count(*) FILTER (WHERE bottleneck = 'idle') AS idle, \
-    \  count(*) FILTER (WHERE bottleneck = 'disabled') AS disabled \
-    \FROM hydrometer.v_bottleneck_minute WHERE t >= ? AND t < ? GROUP BY 1 ORDER BY 1"
-    (b, f, t)
+    "WITH b AS ( \
+    \  SELECT date_bin(make_interval(secs => ?), t, '2000-01-01') AS t, \
+    \    count(*) FILTER (WHERE bottleneck = 'cpu') AS cpu, \
+    \    count(*) FILTER (WHERE bottleneck = 'memory') AS memory, \
+    \    count(*) FILTER (WHERE bottleneck = 'network') AS network, \
+    \    count(*) FILTER (WHERE bottleneck = 'slots') AS slots, \
+    \    count(*) FILTER (WHERE bottleneck = 'scheduler') AS scheduler, \
+    \    count(*) FILTER (WHERE bottleneck = 'starved') AS starved, \
+    \    count(*) FILTER (WHERE bottleneck = 'idle') AS idle, \
+    \    count(*) FILTER (WHERE bottleneck = 'disabled') AS disabled \
+    \  FROM hydrometer.v_bottleneck_minute WHERE t >= ? AND t < ? GROUP BY 1 \
+    \), m AS ( \
+    \  SELECT date_bin(make_interval(secs => ?), t, '2000-01-01') AS t, \
+    \    sum(mem_used_max)::float8 / nullif(sum(mem_total), 0) AS mem_used \
+    \  FROM hydrometer.host_minute WHERE t >= ? AND t < ? GROUP BY 1 \
+    \) \
+    \SELECT (extract(epoch FROM b.t) * 1000)::bigint AS t, b.cpu, b.memory, b.network, b.slots, \
+    \  b.scheduler, b.starved, b.idle, b.disabled, m.mem_used \
+    \FROM b LEFT JOIN m ON m.t = b.t ORDER BY 1"
+    (b, f, t, b, f, t)
   pure (tableToSeries (b * 1000) tbl)
 
 bottleneckSummary :: Connection -> TimeRange -> IO Table

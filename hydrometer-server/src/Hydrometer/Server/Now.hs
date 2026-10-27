@@ -21,6 +21,7 @@ import Hydrometer.Server.Blockers (BlockerEnv, waitingAlerts)
 import Hydrometer.Server.Db (epochMs)
 import Hydrometer.Server.Logs (recentLogPatterns)
 import Hydrometer.Server.Ingest (AgentState (..))
+import Hydrometer.Server.GcLock (GcHolder (..), gcLockHolders)
 import Hydrometer.Server.Queries (busySteps, lastStepFinish, pendingEvals, prefetchedSteps, runningEvals)
 import Hydrometer.Server.QueueRunner
 import Hydrometer.Types
@@ -48,11 +49,12 @@ buildNow c agentsVar queueVar benv cacheVar evalSlots = do
   cache <- readTVarIO cacheVar
   logs <- recentLogPatterns c
   waitAlerts <- waitingAlerts benv qs =<< getCurrentTime
+  gcHolders <- gcLockHolders
   lastFinish <- lastStepFinish c
   let qrByName = M.fromList [ (qmName m, m) | m <- qsMachines qs ]
       stepsByMachine = M.fromListWith (++) [ (m, [s]) | s@(m, _, _, _, _, _, _, _, _, _) <- steps ]
       names = S.toList (S.fromList (M.keys agents ++ M.keys qrByName ++ filter (not . T.null) (M.keys stepsByMachine)))
-      machines = map (machineNow agents qrByName (stepOrphaned now qs) prefetched stepsByMachine) names
+      machines = map (machineNow agents qrByName (stepOrphaned now qs) (stepUploading qs) prefetched stepsByMachine) names
       queues = [ QueueNow sys n w | (sys, n, w) <- qsQueues qs, n > 0 || sys `elem` activeSystems ]
       activeSystems = concatMap mSystems machines
       evalRuns = [ (rName r, r, h) | AgentState { asLatest = Just s } <- M.elems agents
@@ -75,7 +77,8 @@ buildNow c agentsVar queueVar benv cacheVar evalSlots = do
         ws -> Just (maximum ws)
       runnableTotal = sum [ n | QueueNow _ n _ <- queues ]
       freeSlots = sum [ max 0 (fromMaybe 0 (mMaxJobs m) - length (filter usesSlot (mSlots m))) | m <- machines, not (mDisabled m) ]
-      usesSlot s = not (slOrphaned s || slPrefetched s)
+      usesSlot s = not (slOrphaned s || slPrefetched s || slUploading s)
+      uploadingNow = length [ () | m <- machines, s <- mSlots m, slUploading s ]
       orphans = [ (mName m, s) | m <- machines, s <- mSlots m, slOrphaned s ]
       stalled = case lastFinish of
         Just lf -> runnableTotal > 0 && freeSlots > 0 && now - lf > 15 * 60000
@@ -92,6 +95,16 @@ buildNow c agentsVar queueVar benv cacheVar evalSlots = do
         ++ [ Alert "critical" (T.pack (show (length pendingNow)) <> " evaluations are pending, the oldest requested "
               <> T.pack (show (w `div` 60000)) <> " minutes ago, but none is running: hydra-evaluator may be stalled.")
            | null evals, Just w <- [oldestRequest], w > 10 * 60000 ]
+        -- A garbage collection that deletes blocks every addition to this
+        -- host's store, including the builders' uploads (2026-10-27: a
+        -- manual nix-collect-garbage -d stalled them for 30 minutes).
+        ++ [ Alert (if uploadingNow > 0 then "critical" else "warning")
+              ("`" <> ghCommand g <> "` (pid " <> T.pack (show (ghPid g)) <> ") has held the Nix garbage collector's lock on "
+                <> "the hydrometer host for " <> T.pack (show ((now - since) `div` 60000)) <> " minutes. While it deletes, "
+                <> "nothing can be added to the store, so builders' uploads wait"
+                <> (if uploadingNow > 0 then " (" <> T.pack (show uploadingNow) <> " built steps are waiting to upload)" else "")
+                <> "; an upload that waits 30 minutes fails and its build is redone.")
+           | g <- gcHolders, not (ghReadOnly g), Just since <- [ghSinceMs g], now - since >= 5 * 60000 ]
         ++ waitAlerts
         ++ [ Alert "warning" ("Only " <> T.pack (show (cnPresent cn)) <> " of " <> T.pack (show (cnSampled cn))
               <> " outputs built 30-120 minutes ago are on " <> cnUrl cn <> ".")
@@ -117,10 +130,11 @@ buildNow c agentsVar queueVar benv cacheVar evalSlots = do
 
 machineNow
   :: Map Text AgentState -> Map Text QrMachine -> (Text -> Text -> Maybe Int64 -> Bool)
+  -> (Text -> Text -> Bool)
   -> S.Set (Int, Int)
   -> Map Text [(Text, Int, Int, Text, Text, Text, Text, Text, Maybe Text, Maybe Int64)]
   -> Text -> MachineNow
-machineNow agents qrByName isOrphan prefetched stepsByMachine name = MachineNow
+machineNow agents qrByName isOrphan isUploading prefetched stepsByMachine name = MachineNow
   { mName = name
   , mOs = aOs <$> info
   , mCpuCount = aCpuCount <$> info
@@ -181,7 +195,8 @@ machineNow agents qrByName isOrphan prefetched stepsByMachine name = MachineNow
         , slNetRxRate = (\x -> fromIntegral (rNetRxBytes x) * 1000 / fromIntegral (max 1 interval)) <$> r
         , slCpuSeconds = Nothing
         , slOrphaned = orphaned drvPath started && null r
-        , slPrefetched = S.member (b, sn) prefetched }
+        , slPrefetched = S.member (b, sn) prefetched
+        , slUploading = isUploading name drvPath }
     stepNames = S.fromList [ d | (_, _, _, _, _, _, d, _, _, _) <- hydraSteps ]
     -- Builds the agent sees that hydra did not schedule here (IFD for an
     -- evaluation, or steps hydra has not yet recorded).
@@ -193,7 +208,8 @@ machineNow agents qrByName isOrphan prefetched stepsByMachine name = MachineNow
           , slCores = Just (fromIntegral (rCpuMs r) / fromIntegral (max 1 interval))
           , slRss = Just (rFootprint r)
           , slNetRxRate = Just (fromIntegral (rNetRxBytes r) * 1000 / fromIntegral (max 1 interval))
-          , slCpuSeconds = Nothing, slOrphaned = False, slPrefetched = False }
+          , slCpuSeconds = Nothing, slOrphaned = False, slPrefetched = False, slUploading = False }
       | r <- runs, rKind r /= Evaluation, not (rName r `S.member` stepNames) ]
-    -- Prefetched steps last: they are queued behind the machine's slots.
-    slots = sortOn slPrefetched (map stepSlot hydraSteps ++ extraSlots)
+    -- Steps using no slot last: prefetched ones are queued behind the
+    -- machine's slots, uploading ones are already built.
+    slots = sortOn (\s -> (slPrefetched s, slUploading s)) (map stepSlot hydraSteps ++ extraSlots)

@@ -52,7 +52,9 @@ h3 { font-size: 14px; margin: 14px 0 8px; color: var(--muted); text-transform: u
 .slot .meta > span.shrink { flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .slot .job { color: var(--muted); font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .slot.free { color: var(--idle); font-style: italic; }
-.slot.prefetched { opacity: .55; }
+.slot.prefetched, .slot.uploading { opacity: .55; }
+.tag.uploading { background: var(--line); color: var(--muted); }
+.tag.state-uploading { background: var(--line); color: var(--muted); }
 .tag.prefetched { background: var(--line); color: var(--muted); }
 .card.pending .pending-list { margin: 8px 0 0; padding-left: 22px; max-height: 260px; overflow-y: auto; font-size: 12px; }
 .card.pending li { padding: 3px 0; border-bottom: 1px dashed var(--line); }

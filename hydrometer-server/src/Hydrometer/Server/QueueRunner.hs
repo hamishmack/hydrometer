@@ -8,6 +8,7 @@ module Hydrometer.Server.QueueRunner
   , emptyQueueState
   , queueAsOf
   , stepOrphaned
+  , stepUploading
   , runQueuePoller
   , fetchQueueState
   , parseMachines
@@ -58,6 +59,9 @@ data QrMachine = QrMachine
   , qmDownloading  :: !(Maybe Int)
   , qmJobs         :: ![Text]
     -- ^ The steps it is running, as .drv basenames (no store directory).
+  , qmFreedJobs    :: ![Text]
+    -- ^ Steps it has built and freed the slot of, whose outputs it is still
+    -- uploading (queue runner's freedJobs; empty from runners without it).
   } deriving stock (Show)
 
 -- | One builder registration, with what decides whether it gets work.
@@ -122,7 +126,13 @@ stepOrphaned now qs host drvPath started = case queueAsOf now qs of
   Just asOf -> T.takeWhileEnd (/= '/') drvPath `notElem` jobs && maybe False (< asOf - 120000) started
   Nothing -> False
   where
-    jobs = concat [ qmJobs m | m <- qsMachines qs, qmName m == host ]
+    jobs = concat [ qmJobs m ++ qmFreedJobs m | m <- qsMachines qs, qmName m == host ]
+
+-- | The step is built and its builder is uploading the outputs: the slot is
+-- free, but hydra lists the step as busy until the upload completes.
+stepUploading :: QueueState -> Text -> Text -> Bool
+stepUploading qs host drvPath =
+  T.takeWhileEnd (/= '/') drvPath `elem` concat [ qmFreedJobs m | m <- qsMachines qs, qmName m == host ]
 
 parseMachines :: A.Value -> [QrMachine]
 parseMachines v = maybe [] id $ flip A.parseMaybe v $ A.withObject "status" $ \o -> do
@@ -149,6 +159,7 @@ parseMachines v = maybe [] id $ flip A.parseMaybe v $ A.withObject "status" $ \o
         <*> stat "currentUploadingPathCount"
         <*> stat "currentDownloadingPathCount"
         <*> (mapMaybe (A.parseMaybe A.parseJSON) <$> m .:? "jobs" .!= ([] :: [A.Value]))
+        <*> (mapMaybe (A.parseMaybe A.parseJSON) <$> m .:? "freedJobs" .!= ([] :: [A.Value]))
 
 parseRegistrations :: A.Value -> [QrRegistration]
 parseRegistrations v = maybe [] id $ flip A.parseMaybe v $ A.withObject "status" $ \o -> do
@@ -195,6 +206,7 @@ mergeByHost ms = map (foldl1' merge) (M.elems (M.fromListWith (flip (++)) [ (qmN
       , qmUploading = (+) <$> qmUploading a <*> qmUploading b
       , qmDownloading = (+) <$> qmDownloading a <*> qmDownloading b
       , qmJobs = qmJobs a ++ qmJobs b
+      , qmFreedJobs = qmFreedJobs a ++ qmFreedJobs b
       }
 
 -- | Every queue entry.

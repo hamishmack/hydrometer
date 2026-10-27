@@ -56,7 +56,9 @@
     var series = cols.filter(function (k) { return s.series && s.series[k]; }).map(function (k) {
       return {
         name: (o.labels && o.labels[k]) || k, type: "line", showSymbol: false, connectNulls: false,
-        stack: o.stack ? "s" : undefined, areaStyle: o.area || o.stack ? { opacity: 0.35 } : undefined,
+        // Only first-axis series stack: a second-axis line is a different unit.
+        stack: o.stack && !(o.axes && o.axes[k]) ? "s" : undefined,
+        areaStyle: o.area || (o.stack && !(o.axes && o.axes[k])) ? { opacity: 0.35 } : undefined,
         yAxisIndex: (o.axes && o.axes[k]) || 0,
         step: o.step ? "start" : undefined,
         data: s.time.map(function (t, i) { return [t, s.series[k][i]]; })

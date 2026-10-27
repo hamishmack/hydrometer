@@ -45,7 +45,7 @@ nowPage = mdo
     Just n -> do
       forM_ (nAlerts n) $ \a -> elClass "div" ("alert " <> alLevel a) (text (alMessage a))
       let ms = nMachines n
-          busySlots = sum [ length (filter (\s -> not (slOrphaned s || slPrefetched s)) (mSlots m)) | m <- ms ]
+          busySlots = sum [ length (filter (\s -> not (slOrphaned s || slPrefetched s || slUploading s)) (mSlots m)) | m <- ms ]
           slotsTotal = sum [ fromMaybe 0 (mMaxJobs m) | m <- ms ]
           cores = sum [ fromIntegral (fromMaybe 0 (mCpuCount m)) * fromMaybe 0 (mCpuUtil m) | m <- ms ] :: Double
           totalCores = sum [ fromMaybe 0 (mCpuCount m) | m <- ms, isJust (mCpuUtil m) ]
@@ -184,11 +184,12 @@ machineCard clock openB m = elClass "div" "card" $ do
           "Other: " <> T.intercalate ", " [ k <> " " <> fmtFixed 1 v <> " cores" | (k, v) <- others ]
     elAttr "div" ("class" =: "muted oneline" <> "title" =: otherT) (text otherT)
   let (orphans, notOrphaned) = partition slOrphaned (mSlots m)
-      (prefetched, live) = partition slPrefetched notOrphaned
+      (waiting, live) = partition (\s -> slPrefetched s || slUploading s) notOrphaned
       slotRow s = do
         elAttr "div" ("class" =: "drv" <> "title" =: fromMaybe (slDrvName s) (slDrvPath s)) $ do
           forM_ (slKind s) $ \k -> elClass "span" ("tag " <> (if isJust (slBuild s) then k else "ifd")) (text (if isJust (slBuild s) then k else "not a hydra step")) >> text " "
           when (slPrefetched s) $ elAttr "span" ("class" =: "tag prefetched" <> "title" =: "Inputs imported; waiting for a free slot on this machine (hydra-builder prefetch)") (text "prefetched") >> text " "
+          when (slUploading s) $ elAttr "span" ("class" =: "tag uploading" <> "title" =: "Built; the builder freed the slot and is uploading the outputs to the queue runner") (text "uploading") >> text " "
           case slBuild s of
             Just b -> elAttr "a" ("href" =: ("#/build/" <> showT b)) (text (slDrvName s))
             Nothing -> text (slDrvName s)
@@ -205,9 +206,9 @@ machineCard clock openB m = elClass "div" "card" $ do
     let free = fromMaybe 0 (mMaxJobs m) - length [ () | s <- live, isJust (slBuild s) ]
     when (free > 0) $ elClass "div" "slot free" $
       text (showT free <> " free slot" <> (if free == 1 then "" else "s"))
-    -- Steps the queue runner sent ahead of a free slot (hydra-builder's
-    -- prefetch): inputs imported, waiting for one of the slots above.
-    forM_ prefetched $ \s -> elClass "div" "slot prefetched" (slotRow s)
+    -- Steps using no slot: sent ahead of a free slot (hydra-builder's
+    -- prefetch, waiting for one of the slots above), or built and uploading.
+    forM_ waiting $ \s -> elClass "div" (if slUploading s then "slot uploading" else "slot prefetched") (slotRow s)
     -- Steps hydra lists as running that no builder is running (see the
     -- alert): collapsed, so they do not bury the real slots.
     if null orphans then pure never else do
@@ -293,15 +294,19 @@ jobsPage = do
 bottlenecksPage :: forall t m. W t m => m ()
 bottlenecksPage = do
   el "h2" (text "What limits the farm")
-  elClass "p" "muted" (text "Each machine-minute is classified by what limited it: cpu (≥85% of cores busy), memory (pressure or paging), network, slots (every build slot busy without saturating the hardware: more slots or bigger VMs would help), scheduler (free slots while work for the machine's systems is runnable: the queue runner is not dispatching), starved (free slots, nothing runnable: waiting on dependencies elsewhere), idle.")
+  elClass "p" "muted" (text "Each machine-minute is classified by what limited it: cpu (≥85% of cores busy), memory (pressure or paging), network, slots (every build slot busy without saturating the hardware: more slots or bigger VMs would help), scheduler (free slots while work for the machine's systems is runnable: the queue runner is not dispatching), starved (free slots, nothing runnable: waiting on dependencies elsewhere), idle The line is the memory in use across the machines (right axis).")
   hoursD <- rangeSelector 24
   bD <- fetchDyn (Just 60) ((\h -> "api/bottlenecks?" <> rangeQuery h) <$> hoursD) :: m (Dynamic t (Maybe A.Value))
   farmD <- fetchDyn (Just 60) ((\h -> "api/farm?" <> rangeQuery h) <$> hoursD) :: m (Dynamic t (Maybe Series))
   let series = (>>= A.parseMaybe (A.withObject "b" (A..: "series"))) <$> bD :: Dynamic t (Maybe Series)
       summary = (>>= A.parseMaybe (A.withObject "b" (A..: "summary"))) <$> bD :: Dynamic t (Maybe Table)
   chartWidget "chart tall" "line" $ ffor series $ fmap $ \s -> (s, A.object
-    [ "cols" .= (["cpu", "memory", "network", "slots", "scheduler", "starved", "idle", "disabled"] :: [Text])
-    , "stack" .= True, "unit" .= ("" :: Text) ])
+    [ "cols" .= (["cpu", "memory", "network", "slots", "scheduler", "starved", "idle", "disabled", "mem_used"] :: [Text])
+    , "stack" .= True, "unit" .= ("" :: Text)
+      -- Memory in use across the agents' machines, on its own axis and not
+      -- stacked with the machine-minutes.
+    , "axes" .= A.object ["mem_used" .= (1 :: Int)], "unit2" .= ("pct" :: Text)
+    , "labels" .= A.object ["mem_used" .= ("memory used (all machines)" :: Text)] ])
   el "h3" (text "Farm")
   chartWidget "chart" "line" $ ffor farmD $ fmap $ \s -> (s, A.object
     [ "cols" .= (["cpu_util", "runs", "runnable_linux", "runnable_darwin"] :: [Text])
@@ -385,6 +390,7 @@ blockersView clock b = do
       elClass "td" "reason" $ text $ case (blState x, blReason x) of
         (_, Just r) -> r
         ("orphaned", _) -> "the queue runner lost it; restarting hydra-queue-runner requeues it"
+        ("uploading", _) -> "built; the builder is uploading its outputs to the queue runner"
         ("waiting", _) -> "a builder that can take it has capacity: it should be dispatched soon"
         _ -> ""
   elClass "p" "muted" $ text $ "Worked out from " <> showT (ebDrvsRead b) <> " derivations in "
