@@ -119,6 +119,10 @@ data HostStats = HostStats
   , hDiskWriteBytes :: !Int64
   , hOpenFiles    :: !(Maybe Int64)
   , hMaxFiles     :: !(Maybe Int64)
+  , hFreeVnodes   :: !(Maybe Int64)
+    -- ^ kern.free_vnodes (macOS).  None free: opening a file fails with ENFILE.
+  , hMaxVnodes    :: !(Maybe Int64)
+    -- ^ kern.maxvnodes (macOS).
   , hStoreFree    :: !(Maybe Int64)
   , hStoreTotal   :: !(Maybe Int64)
   } deriving stock (Show, Eq, Generic)

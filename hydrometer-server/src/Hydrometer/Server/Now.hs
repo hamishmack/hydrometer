@@ -118,6 +118,16 @@ buildNow c agentsVar queueVar benv cacheVar evalSlots = do
            | (n, a) <- M.toList agents, Just e <- [asError a] ]
         ++ [ Alert "warning" (mName m <> " is using " <> pct o mx <> " of its file descriptors (kern.maxfiles)")
            | m <- machines, Just o <- [mOpenFiles m], Just mx <- [mMaxFiles m], mx > 0, fromIntegral o > (0.8 :: Double) * fromIntegral mx ]
+        -- Every open file needs a vnode; with none free, opening any file
+        -- fails with ENFILE ("Too many open files in system"), however high
+        -- kern.maxfiles is.  Long linux VM builds hold one per inode their
+        -- guest has cached (2026-10-28: evals 3091 and 3093 lost dozens of
+        -- GHC steps on the M4s to it).
+        ++ [ Alert (if fromIntegral f < (0.1 :: Double) * fromIntegral mx then "critical" else "warning")
+              (mName m <> " has only " <> T.pack (show f) <> " of " <> T.pack (show mx) <> " vnodes free ("
+                <> pct f mx <> "): when none is free, every build on it fails with ENFILE (\"Too many open files in system\").")
+           | m <- machines, Just f <- [mFreeVnodes m], Just mx <- [mMaxVnodes m], mx > 0
+           , fromIntegral f < (0.2 :: Double) * fromIntegral mx ]
         ++ [ Alert "warning" (mName m <> " has only " <> pct f t <> " of its nix store disk free")
            | m <- machines, Just f <- [mStoreFree m], Just t <- [mStoreTotal m], t > 0, fromIntegral f < (0.1 :: Double) * fromIntegral t ]
         ++ [ Alert "warning" (mName m <> " is under memory pressure (" <> T.pack (show (round p :: Int)) <> ")")
@@ -151,6 +161,8 @@ machineNow agents qrByName isOrphan isUploading prefetched stepsByMachine name =
   , mDiskWriteRate = host >>= \h -> perSecond h (hDiskWriteBytes h)
   , mOpenFiles = host >>= hOpenFiles
   , mMaxFiles = host >>= hMaxFiles
+  , mFreeVnodes = host >>= hFreeVnodes
+  , mMaxVnodes = host >>= hMaxVnodes
   , mStoreFree = host >>= hStoreFree
   , mStoreTotal = host >>= hStoreTotal
   , mSystems = systems

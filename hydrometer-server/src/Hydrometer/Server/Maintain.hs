@@ -67,20 +67,21 @@ rollup c = void $ execute_ c
   \    max(h.mem_used) AS mem_used, max(h.mem_total) AS mem_total, max(h.mem_pressure) AS pressure, \
   \    max(h.swap_used) AS swap, sum(h.pageouts) AS pageouts, sum(h.net_rx_bytes) AS rx, sum(h.net_tx_bytes) AS tx, \
   \    sum(h.disk_read_bytes) AS dr, sum(h.disk_write_bytes) AS dw, max(h.open_files) AS files, min(h.store_free) AS store, \
-  \    coalesce(max(ra.n), 0) AS runs \
+  \    coalesce(max(ra.n), 0) AS runs, min(h.free_vnodes) AS vfree, max(h.max_vnodes) AS vmax \
   \  FROM hydrometer.host_samples h \
   \  LEFT JOIN runs_at ra ON ra.machine = h.machine AND ra.t = h.t \
   \  WHERE h.t >= now() - interval '20 minutes' \
   \  GROUP BY 1, 2 \
   \) \
   \INSERT INTO hydrometer.host_minute \
-  \SELECT machine, t, samples, busy, total, mem_used, mem_total, pressure, swap, pageouts, rx, tx, dr, dw, files, store, runs FROM mins \
+  \SELECT machine, t, samples, busy, total, mem_used, mem_total, pressure, swap, pageouts, rx, tx, dr, dw, files, store, runs, vfree, vmax FROM mins \
   \ON CONFLICT (machine, t) DO UPDATE SET samples = excluded.samples, cpu_busy_ms = excluded.cpu_busy_ms, \
   \  cpu_total_ms = excluded.cpu_total_ms, mem_used_max = excluded.mem_used_max, mem_total = excluded.mem_total, \
   \  mem_pressure_max = excluded.mem_pressure_max, swap_used_max = excluded.swap_used_max, pageouts = excluded.pageouts, \
   \  net_rx_bytes = excluded.net_rx_bytes, net_tx_bytes = excluded.net_tx_bytes, \
   \  disk_read_bytes = excluded.disk_read_bytes, disk_write_bytes = excluded.disk_write_bytes, \
-  \  open_files_max = excluded.open_files_max, store_free_min = excluded.store_free_min, runs_max = excluded.runs_max"
+  \  open_files_max = excluded.open_files_max, store_free_min = excluded.store_free_min, runs_max = excluded.runs_max, \
+  \  free_vnodes_min = excluded.free_vnodes_min, max_vnodes = excluded.max_vnodes"
 
 retention :: Connection -> Int -> IO ()
 retention c days = do

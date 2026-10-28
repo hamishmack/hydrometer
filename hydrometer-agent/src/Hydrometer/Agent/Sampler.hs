@@ -204,6 +204,8 @@ hostDelta interval a b = HostStats
   , hDiskWriteBytes = d hrDiskWrite
   , hOpenFiles = hrOpenFiles b
   , hMaxFiles = hrMaxFiles b
+  , hFreeVnodes = hrFreeVnodes b
+  , hMaxVnodes = hrMaxVnodes b
   , hStoreFree = hrStoreFree b
   , hStoreTotal = hrStoreTotal b
   }

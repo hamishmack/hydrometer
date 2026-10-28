@@ -59,6 +59,8 @@ data HostRaw = HostRaw
   , hrDiskWrite   :: !Int64
   , hrOpenFiles   :: !(Maybe Int64)
   , hrMaxFiles    :: !(Maybe Int64)
+  , hrFreeVnodes  :: !(Maybe Int64)
+  , hrMaxVnodes   :: !(Maybe Int64)
   , hrStoreFree   :: !(Maybe Int64)
   , hrStoreTotal  :: !(Maybe Int64)
   } deriving stock (Show, Eq)

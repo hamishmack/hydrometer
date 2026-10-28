@@ -111,10 +111,11 @@ ingest d machine agentUrl sr = withTx d $ \c -> do
     let t = fromEpochMs (sTime s)
         h = sHost s
     void $ execute c
-      "INSERT INTO hydrometer.host_samples VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING"
+      "INSERT INTO hydrometer.host_samples VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING"
       ( (machine, t, hIntervalMs h, hCpuUserMs h, hCpuSystemMs h, hCpuIdleMs h, hLoad1 h, hLoad5 h, hLoad15 h, hMemTotal h)
         :. (hMemUsed h, hMemCompressed h, hMemPressure h, hCpuPressure h, hIoPressure h, hSwapUsed h, hSwapTotal h, hPageouts h)
-        :. (hNetRxBytes h, hNetTxBytes h, hDiskReadBytes h, hDiskWriteBytes h, hOpenFiles h, hMaxFiles h, hStoreFree h, hStoreTotal h) )
+        :. (hNetRxBytes h, hNetTxBytes h, hDiskReadBytes h, hDiskWriteBytes h, hOpenFiles h, hMaxFiles h, hStoreFree h, hStoreTotal h)
+        :. (hFreeVnodes h, hMaxVnodes h) )
     forM_ (sRuns s) $ \r -> do
       [Only runId] <- query c
         "INSERT INTO hydrometer.runs AS r (machine, run_key, kind, name, outputs, system, started, first_seen, last_seen, \

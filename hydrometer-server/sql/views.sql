@@ -110,10 +110,10 @@ SELECT
   net_tx_bytes * 1000.0 / nullif(interval_ms, 0) AS net_tx_rate,
   disk_read_bytes * 1000.0 / nullif(interval_ms, 0) AS disk_read_rate,
   disk_write_bytes * 1000.0 / nullif(interval_ms, 0) AS disk_write_rate,
-  open_files, max_files, store_free, store_total
+  open_files, max_files, store_free, store_total, free_vnodes, max_vnodes
 FROM hydrometer.host_samples;
 COMMENT ON VIEW hydrometer.v_host IS
-  'Raw host samples as rates: cpu_util 0..1 of all cores, cores_busy, *_rate in bytes/second, mem_pressure 0..100. Last 14 days only; use v_machine_minute for longer ranges.';
+  'Raw host samples as rates: cpu_util 0..1 of all cores, cores_busy, *_rate in bytes/second, mem_pressure 0..100, free_vnodes/max_vnodes (macOS: with no vnode free, opening a file fails with ENFILE). Last 14 days only; use v_machine_minute for longer ranges.';
 
 CREATE VIEW hydrometer.v_step_usage AS
 SELECT
@@ -156,9 +156,9 @@ SELECT
   net_tx_bytes / 60.0 AS net_tx_rate,
   disk_read_bytes / 60.0 AS disk_read_rate,
   disk_write_bytes / 60.0 AS disk_write_rate,
-  open_files_max, store_free_min, runs_max
+  open_files_max, store_free_min, runs_max, free_vnodes_min, max_vnodes
 FROM hydrometer.host_minute;
-COMMENT ON VIEW hydrometer.v_machine_minute IS 'Per-machine per-minute rollup (kept a year): cpu_util 0..1, peak memory, rates in bytes/second, runs_max = most concurrent builds seen.';
+COMMENT ON VIEW hydrometer.v_machine_minute IS 'Per-machine per-minute rollup (kept a year): cpu_util 0..1, peak memory, rates in bytes/second, runs_max = most concurrent builds seen, free_vnodes_min = fewest free vnodes (macOS; none free means ENFILE).';
 
 -- What limited each machine in each minute of [from_t, to_t).  A function so that
 -- the range reaches every step: as a plain view, the per-minute run and

@@ -99,6 +99,8 @@ data MachineNow = MachineNow
   , mDiskWriteRate :: !(Maybe Double)
   , mOpenFiles   :: !(Maybe Int64)
   , mMaxFiles    :: !(Maybe Int64)
+  , mFreeVnodes  :: !(Maybe Int64)
+  , mMaxVnodes   :: !(Maybe Int64)
   , mStoreFree   :: !(Maybe Int64)
   , mStoreTotal  :: !(Maybe Int64)
   , mSystems     :: ![Text]

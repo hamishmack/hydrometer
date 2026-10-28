@@ -114,6 +114,8 @@ readHost storePath = do
     , hrDiskWrite = sum (map snd dsk)
     , hrOpenFiles = case fileNr of (a:_) -> Just a; _ -> Nothing
     , hrMaxFiles = case fileNr of [_, _, m] -> Just m; _ -> Nothing
+    , hrFreeVnodes = Nothing
+    , hrMaxVnodes = Nothing
     , hrStoreFree = fst <$> space
     , hrStoreTotal = snd <$> space
     }
