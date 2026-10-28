@@ -133,7 +133,7 @@ bottleneckSeries c tr@(TimeRange f t) = do
     \    count(*) FILTER (WHERE bottleneck = 'starved') AS starved, \
     \    count(*) FILTER (WHERE bottleneck = 'idle') AS idle, \
     \    count(*) FILTER (WHERE bottleneck = 'disabled') AS disabled \
-    \  FROM hydrometer.v_bottleneck_minute WHERE t >= ? AND t < ? GROUP BY 1 \
+    \  FROM hydrometer.bottleneck_minutes(?, ?) GROUP BY 1 \
     \), m AS ( \
     \  SELECT date_bin(make_interval(secs => ?), t, '2000-01-01') AS t, \
     \    sum(mem_used_max)::float8 / nullif(sum(mem_total), 0) AS mem_used \
@@ -156,7 +156,7 @@ bottleneckSummary c (TimeRange f t) = queryTable c
   \  count(*) FILTER (WHERE bottleneck = 'scheduler') AS scheduler, \
   \  count(*) FILTER (WHERE bottleneck = 'starved') AS starved, \
   \  count(*) FILTER (WHERE bottleneck = 'idle') AS idle \
-  \FROM hydrometer.v_bottleneck_minute WHERE t >= ? AND t < ? GROUP BY ROLLUP (machine) ORDER BY machine NULLS LAST"
+  \FROM hydrometer.bottleneck_minutes(?, ?) GROUP BY ROLLUP (machine) ORDER BY machine NULLS LAST"
   (f, t)
 
 -- | Farm-wide utilisation and queue depth.

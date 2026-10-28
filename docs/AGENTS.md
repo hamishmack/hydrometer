@@ -51,6 +51,8 @@ linux-0, or the MCP `sql` tool.
   mem_pressure is 0..100.
 - `hydrometer.v_machine_minute`: per-minute rollup, kept for a year.
 - `hydrometer.v_bottleneck_minute`: what limited each machine in each minute.
+  For a time range use `hydrometer.bottleneck_minutes(from, to)`: filtering
+  the view still computes it over all time.
 - `hydrometer.v_eval_progress`: build counts per evaluation.
 - `hydrometer.v_now_steps`: steps hydra says are running.
 
@@ -87,8 +89,7 @@ Are we memory, CPU or network bound?
 ```sql
 SELECT bottleneck, count(*) AS machine_minutes,
        round(100.0 * count(*) / sum(count(*)) OVER (), 1) AS pct
-FROM hydrometer.v_bottleneck_minute
-WHERE t > now() - interval '24 hours'
+FROM hydrometer.bottleneck_minutes(now() - interval '24 hours', now())
 GROUP BY 1 ORDER BY 2 DESC;
 ```
 

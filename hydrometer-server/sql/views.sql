@@ -5,6 +5,7 @@
 
 DROP VIEW IF EXISTS hydrometer.v_now_steps, hydrometer.v_eval_progress, hydrometer.v_bottleneck_minute,
   hydrometer.v_machine_minute, hydrometer.v_step_usage, hydrometer.v_host CASCADE;
+DROP FUNCTION IF EXISTS hydrometer.bottleneck_minutes(timestamptz, timestamptz) CASCADE;
 DROP FUNCTION IF EXISTS hydrometer.classify_drv(text) CASCADE;
 DROP FUNCTION IF EXISTS hydrometer.drv_name(text) CASCADE;
 DROP TYPE IF EXISTS hydrometer.drv_class CASCADE;
@@ -159,38 +160,54 @@ SELECT
 FROM hydrometer.host_minute;
 COMMENT ON VIEW hydrometer.v_machine_minute IS 'Per-machine per-minute rollup (kept a year): cpu_util 0..1, peak memory, rates in bytes/second, runs_max = most concurrent builds seen.';
 
-CREATE VIEW hydrometer.v_bottleneck_minute AS
+-- What limited each machine in each minute of [from_t, to_t).  A function so that
+-- the range reaches every step: as a plain view, the per-minute run and
+-- queue aggregates covered all samples ever kept whatever range the caller
+-- asked for, and the Bottlenecks page's queries ran for 20 minutes.
+CREATE FUNCTION hydrometer.bottleneck_minutes(from_t timestamptz, to_t timestamptz)
+RETURNS TABLE (machine text, t timestamptz, cpu_util float8, mem_pressure_max real,
+               pageouts bigint, net_rx_rate numeric, builds bigint, slots bigint,
+               runnable bigint, bottleneck text)
+LANGUAGE sql STABLE AS $$
 WITH builder AS (
   SELECT m.name AS machine, b.ord AS builder, (b.value->>'maxJobs')::int AS max_jobs,
          ARRAY(SELECT jsonb_array_elements_text(b.value->'systems')) AS systems
   FROM hydrometer.machines m,
        jsonb_array_elements(coalesce(m.builders, '[]'::jsonb)) WITH ORDINALITY AS b(value, ord)
-), runs_min AS (
+), mm AS (
+  SELECT * FROM hydrometer.v_machine_minute m WHERE m.t >= from_t AND m.t < to_t
+), runs_min AS MATERIALIZED (
   -- Most builds running at once per machine, minute and system.
   SELECT machine, t, system, max(n) AS n FROM (
     SELECT r.machine, date_trunc('minute', rs.t) AS t, rs.t AS st, r.system, count(*) AS n
     FROM hydrometer.run_samples rs JOIN hydrometer.runs r ON r.id = rs.run_id
-    WHERE r.kind <> 'eval' GROUP BY 1, 2, 3, 4) x
+    WHERE r.kind <> 'eval' AND rs.t >= from_t AND rs.t < to_t
+    GROUP BY 1, 2, 3, 4) x
   GROUP BY 1, 2, 3
-), queue AS (
-  SELECT date_trunc('minute', t) AS t, system, max(runnable) AS runnable
-  FROM hydrometer.queue_samples GROUP BY 1, 2
+), queue AS MATERIALIZED (
+  SELECT date_trunc('minute', q.t) AS t, q.system, max(q.runnable) AS runnable
+  FROM hydrometer.queue_samples q WHERE q.t >= from_t AND q.t < to_t
+  GROUP BY 1, 2
 ), per_builder AS (
-  SELECT m.machine, m.t, b.builder, b.max_jobs,
-    coalesce((SELECT sum(n) FROM runs_min rm
-              WHERE rm.machine = m.machine AND rm.t = m.t AND rm.system = ANY (b.systems)), 0) AS busy,
-    coalesce((SELECT sum(runnable) FROM queue q
-              WHERE q.t = m.t AND q.system = ANY (b.systems)), 0) AS runnable
-  FROM hydrometer.v_machine_minute m JOIN builder b ON b.machine = m.machine
+  SELECT m.machine, m.t, b.builder, b.max_jobs, b.systems, coalesce(sum(rm.n), 0) AS busy
+  FROM mm m JOIN builder b ON b.machine = m.machine
+  LEFT JOIN runs_min rm ON rm.machine = m.machine AND rm.t = m.t AND rm.system = ANY (b.systems)
+  GROUP BY 1, 2, 3, 4, 5
+), per_builder_q AS (
+  SELECT p.machine, p.t, p.builder, p.max_jobs, p.busy, coalesce(sum(q.runnable), 0) AS runnable
+  FROM per_builder p
+  LEFT JOIN LATERAL unnest(p.systems) AS s(system) ON true
+  LEFT JOIN queue q ON q.t = p.t AND q.system = s.system
+  GROUP BY 1, 2, 3, 4, 5
 ), agg AS (
   SELECT machine, t, sum(busy) AS builds, sum(max_jobs) AS slots, sum(runnable) AS runnable,
     bool_or(busy >= max_jobs AND runnable > 0) AS full_with_work,
     bool_or(busy < max_jobs AND runnable > 0) AS free_with_work
-  FROM per_builder GROUP BY 1, 2
+  FROM per_builder_q GROUP BY 1, 2
 )
 SELECT
   m.machine, m.t, m.cpu_util, m.mem_pressure_max, m.pageouts, m.net_rx_rate,
-  coalesce(a.builds, m.runs_max) AS builds, a.slots, a.runnable,
+  coalesce(a.builds, m.runs_max)::bigint AS builds, a.slots::bigint, a.runnable::bigint,
   CASE
     WHEN m.cpu_util >= 0.85 THEN 'cpu'
     WHEN m.mem_pressure_max >= 50 OR m.pageouts > 2000 THEN 'memory'
@@ -200,10 +217,16 @@ SELECT
     WHEN coalesce(a.builds, m.runs_max, 0) = 0 THEN 'idle'
     ELSE 'starved'
   END AS bottleneck
-FROM hydrometer.v_machine_minute m
-LEFT JOIN agg a ON a.machine = m.machine AND a.t = m.t;
+FROM mm m
+LEFT JOIN agg a ON a.machine = m.machine AND a.t = m.t
+$$;
+COMMENT ON FUNCTION hydrometer.bottleneck_minutes(timestamptz, timestamptz) IS
+  'v_bottleneck_minute for the minutes in [from_t, to_t).  Use this rather than filtering the view: the view covers all time.';
+
+CREATE VIEW hydrometer.v_bottleneck_minute AS
+SELECT * FROM hydrometer.bottleneck_minutes('-infinity', 'infinity');
 COMMENT ON VIEW hydrometer.v_bottleneck_minute IS
-  'What limited each machine in each minute. bottleneck: cpu (>=85% of cores busy), memory (pressure >= 50 or heavy paging), network (>= 80 MB/s in), slots (a builder on the machine has every slot busy while steps for its systems are runnable, without saturating the hardware: more slots or bigger VMs would help), scheduler (a builder has free slots while steps for its systems are runnable: the queue runner is not dispatching), starved (nothing runnable for it: waiting on dependencies built elsewhere), idle. Slots come from the agents (hydrometer.machines.builders, one entry per hydra builder: a Mac has a darwin and a linux one); builds counts concurrent agent runs. Thresholds are deliberately simple; check the numeric columns.';
+  'What limited each machine in each minute, over all time: for a range use hydrometer.bottleneck_minutes(from, to), which is far faster. bottleneck: cpu (>=85% of cores busy), memory (pressure >= 50 or heavy paging), network (>= 80 MB/s in), slots (a builder on the machine has every slot busy while steps for its systems are runnable, without saturating the hardware: more slots or bigger VMs would help), scheduler (a builder has free slots while steps for its systems are runnable: the queue runner is not dispatching), starved (nothing runnable for it: waiting on dependencies built elsewhere), idle. Slots come from the agents (hydrometer.machines.builders, one entry per hydra builder: a Mac has a darwin and a linux one); builds counts concurrent agent runs. Thresholds are deliberately simple; check the numeric columns.';
 
 CREATE VIEW hydrometer.v_eval_progress AS
 SELECT
