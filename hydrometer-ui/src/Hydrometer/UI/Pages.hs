@@ -182,6 +182,11 @@ runningCard clock eD = elClass "div" "card running" $ dyn_ $ ffor eD $ \e -> do
   elClass "div" "muted oneline" $ forM_ (eLastEval e) $ \i -> do
     text "previous: "
     elAttr "a" ("href" =: ("#/eval/" <> showT i)) (text ("eval " <> showT i))
+    -- How long it took, and the usual time when that differs, so the
+    -- running time above has something to be compared with.
+    forM_ (eLastEvalSeconds e) $ \s -> text (" took " <> fmtDuration (fromIntegral s))
+    forM_ (eTypicalSeconds e) $ \s -> when (Just s /= eLastEvalSeconds e) $
+      text (" · usually " <> fmtDuration (fromIntegral s))
 
 -- | The evaluator's queue, in the order it will start the evaluations.
 pendingCard :: W t m => Dynamic t UTCTime -> [EvalNow] -> Int -> [PendingEval] -> m ()

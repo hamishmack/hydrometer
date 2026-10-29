@@ -64,8 +64,8 @@ buildNow c agentsVar queueVar benv cacheVar evalSlots = do
             { eProject = p, eJobset = j, eStarted = st
             , eCores = (\(_, r, h) -> fromIntegral (rCpuMs r) / fromIntegral (max 1 (hIntervalMs h))) <$> er
             , eRss = (\(_, r, _) -> rFootprint r) <$> er
-            , eLastEval = prev, eTypicalSeconds = typ }
-        | (p, j, st, prev, typ) <- evals
+            , eLastEval = prev, eLastEvalSeconds = prevS, eTypicalSeconds = typ }
+        | (p, j, st, prev, prevS, typ) <- evals
         , let er = listToMaybe [ x | x@(n, _, _) <- evalRuns, n == p <> ":" <> j ] ]
       pendingNow =
         [ PendingEval { peProject = p, peJobset = j, peRequested = rq, peLastChecked = lc

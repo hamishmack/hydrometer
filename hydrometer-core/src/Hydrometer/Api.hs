@@ -177,6 +177,8 @@ data EvalNow = EvalNow
   , eRss      :: !(Maybe Int64)
   , eLastEval :: !(Maybe Int)
     -- ^ The id of the jobset's previous evaluation.
+  , eLastEvalSeconds :: !(Maybe Int)
+    -- ^ How long that evaluation took (checkout + eval).
   , eTypicalSeconds :: !(Maybe Int)
     -- ^ Median duration of the jobset's last five evaluations.
   } deriving stock (Show, Eq, Generic)

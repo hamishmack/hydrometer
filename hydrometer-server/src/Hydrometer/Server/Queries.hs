@@ -333,8 +333,11 @@ typicalEvalSeconds =
   \  (SELECT checkouttime + evaltime AS s FROM jobsetevals \
   \   WHERE jobset_id = j.id ORDER BY id DESC LIMIT 5) x)"
 
-runningEvals :: Connection -> IO [(Text, Text, Maybe Int64, Maybe Int, Maybe Int)]
+runningEvals :: Connection -> IO [(Text, Text, Maybe Int64, Maybe Int, Maybe Int, Maybe Int)]
 runningEvals c = query_ c $
   "SELECT j.project, j.name, j.starttime::bigint * 1000, \
-  \  (SELECT max(e.id) FROM jobsetevals e WHERE e.jobset_id = j.id), " <> typicalEvalSeconds <> " \
-  \FROM jobsets j WHERE j.starttime IS NOT NULL ORDER BY j.starttime"
+  \  e.id, e.checkouttime + e.evaltime, " <> typicalEvalSeconds <> " \
+  \FROM jobsets j \
+  \LEFT JOIN LATERAL (SELECT id, checkouttime, evaltime FROM jobsetevals \
+  \  WHERE jobset_id = j.id ORDER BY id DESC LIMIT 1) e ON true \
+  \WHERE j.starttime IS NOT NULL ORDER BY j.starttime"
