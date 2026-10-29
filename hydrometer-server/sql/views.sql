@@ -8,6 +8,7 @@ DROP VIEW IF EXISTS hydrometer.v_now_steps, hydrometer.v_eval_progress, hydromet
 DROP FUNCTION IF EXISTS hydrometer.bottleneck_minutes(timestamptz, timestamptz) CASCADE;
 DROP FUNCTION IF EXISTS hydrometer.classify_drv(text) CASCADE;
 DROP FUNCTION IF EXISTS hydrometer.drv_name(text) CASCADE;
+DROP FUNCTION IF EXISTS hydrometer.status_name(integer) CASCADE;
 DROP TYPE IF EXISTS hydrometer.drv_class CASCADE;
 
 -- ---------------------------------------------------------------------------
@@ -18,6 +19,18 @@ IMMUTABLE LANGUAGE sql AS $$
   SELECT regexp_replace(regexp_replace(drvpath, '^/nix/store/[a-z0-9]{32}-', ''), '\.drv$', '')
 $$;
 COMMENT ON FUNCTION hydrometer.drv_name(text) IS 'Strip the store prefix and .drv suffix: /nix/store/<hash>-foo-1.0.drv -> foo-1.0.';
+
+CREATE FUNCTION hydrometer.status_name(status integer) RETURNS text
+IMMUTABLE LANGUAGE sql AS $$
+  SELECT CASE status
+    WHEN 0 THEN 'succeeded' WHEN 1 THEN 'failed' WHEN 2 THEN 'dependency failed'
+    WHEN 3 THEN 'aborted' WHEN 4 THEN 'cancelled' WHEN 6 THEN 'failed with output'
+    WHEN 7 THEN 'timed out' WHEN 8 THEN 'cached failure' WHEN 9 THEN 'unsupported system'
+    WHEN 10 THEN 'log limit exceeded' WHEN 11 THEN 'output size limit exceeded'
+    WHEN 12 THEN 'not deterministic' WHEN 13 THEN 'resolved' WHEN 100 THEN 'busy'
+    ELSE 'status ' || status END
+$$;
+COMMENT ON FUNCTION hydrometer.status_name(integer) IS 'What hydra''s builds.buildstatus and buildsteps.status codes mean (NULL: not finished).';
 
 CREATE TYPE hydrometer.drv_class AS (
   package   text,  -- cabal package (haskell.nix components) or derivation pname
@@ -131,6 +144,7 @@ SELECT
   -- A queue-runner restart closes leftover busy steps with stopTime 0.
   CASE WHEN s.stoptime >= s.starttime THEN s.stoptime - s.starttime END AS wall_s,
   s.status, s.busy,
+  CASE s.type WHEN 1 THEN 'substituted' ELSE 'built' END AS step_kind,
   (s.import_time_ms / 1000.0)::float8 AS import_s,
   (s.build_time_ms / 1000.0)::float8 AS build_s,
   (s.upload_time_ms / 1000.0)::float8 AS upload_s,
@@ -145,7 +159,7 @@ JOIN builds b ON b.id = s.build
 JOIN jobsets j ON j.id = b.jobset_id
 LEFT JOIN hydrometer.runs r ON r.build = s.build AND r.stepnr = s.stepnr;
 COMMENT ON VIEW hydrometer.v_step_usage IS
-  'Every hydra build step with what it cost. From hydra: who (project/jobset/job), where (machine), when (started/stopped/wall_s), phases (import_s: copying inputs to the machine, build_s, upload_s), status (0 = success). From the agents (NULL for steps on machines without an agent or before hydrometer existed): cpu_s, avg_cores, peak_rss/peak_footprint (bytes), net/disk bytes. package/component_kind/component/platform classify the derivation; job_compiler is the 3rd dot-separated part of the job name (e.g. ghc914-sh for haskell.nix jobs). Filter on started first: buildsteps is large.';
+  'Every hydra build step with what it cost. From hydra: who (project/jobset/job), where (machine), when (started/stopped/wall_s), phases (import_s: copying inputs to the machine, build_s, upload_s), status (0 = success; hydrometer.status_name(status) decodes it), step_kind (built on a machine, or substituted: the queue runner fetched the outputs from a binary cache, so machine is empty and there are no phases or agent measurements). From the agents (NULL for steps on machines without an agent or before hydrometer existed): cpu_s, avg_cores, peak_rss/peak_footprint (bytes), net/disk bytes. package/component_kind/component/platform classify the derivation; job_compiler is the 3rd dot-separated part of the job name (e.g. ghc914-sh for haskell.nix jobs). Filter on started first: buildsteps is large.';
 
 CREATE VIEW hydrometer.v_machine_minute AS
 SELECT

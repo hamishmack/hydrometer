@@ -37,6 +37,7 @@ import Hydrometer.Server.Ingest (AgentState)
 import Hydrometer.Server.Now (buildNow)
 import Hydrometer.Server.Queries
 import Hydrometer.Server.QueueRunner (QueueState)
+import Hydrometer.Server.StepGraph (GraphEnv, evalGraph)
 
 data Env = Env
   { envDb     :: Db
@@ -44,6 +45,7 @@ data Env = Env
   , envQueue  :: TVar QueueState
   , envStatic :: Maybe FilePath
   , envBlockers :: BlockerEnv
+  , envGraph  :: GraphEnv
   , envCache  :: TVar (Maybe CacheNow)
   , envEvalSlots :: Maybe Int
   }
@@ -62,6 +64,7 @@ apiIndex = A.object
       , "GET /api/evals?limit" .= ("Recent evaluations with build progress, and the jobsets being evaluated now." :: Text)
       , "GET /api/eval/{id}" .= ("One evaluation: summary (time split into import/build/upload, CPU), timeline of running steps vs unfinished builds, and its longest steps." :: Text)
       , "GET /api/eval/{id}/blockers" .= ("What an evaluation's unfinished builds wait on: counts by state, and the steps holding the most builds, with why runnable ones are not dispatched." :: Text)
+      , "GET /api/eval/{id}/graph" .= ("The steps of an evaluation (the 300 longest) and which of them each waited for, from the .drv files: nodes with start/stop, kind (built or substituted), status; edges [dependency, dependent] as node indexes." :: Text)
       , "GET /api/build/{id}" .= ("The steps of one build with their resource use." :: Text)
       , "GET /api/step/{build}/{stepnr}/series" .= ("CPU cores, memory and network of one step over its life." :: Text)
       ]
@@ -119,6 +122,7 @@ app env req respond = do
       ["api", "eval", i, "blockers"] | Just eid <- readMaybe (T.unpack i) -> do
           qs <- readTVarIO (envQueue env)
           withConn db (\c -> evalBlockers (envBlockers env) c qs eid) >>= ok
+      ["api", "eval", i, "graph"] | Just eid <- readMaybe (T.unpack i) -> withConn db (\c -> evalGraph (envGraph env) c eid) >>= ok
       ["api", "build", i] | Just bid <- readMaybe (T.unpack i) -> withConn db (\c -> buildSteps c bid) >>= ok
       ["api", "step", b, s, "series"] | Just bid <- readMaybe (T.unpack b), Just sn <- readMaybe (T.unpack s) ->
           withConn db (\c -> stepSeries c bid sn) >>= ok

@@ -29,6 +29,7 @@ import Hydrometer.Server.Logs (journalPatterns, runLogScanner)
 import Hydrometer.Server.Maintain
 import Hydrometer.Server.Mcp
 import Hydrometer.Server.QueueRunner
+import Hydrometer.Server.StepGraph (evalGraph, newGraphEnv)
 
 usage :: String
 usage = unlines
@@ -39,6 +40,7 @@ usage = unlines
   , "  mcp                   Model Context Protocol server on stdio (for AI agents)"
   , "  query SQL             run read-only SQL and print {columns, rows} as JSON"
   , "  blockers EVAL_ID      what an evaluation's unfinished builds wait on, as JSON"
+  , "  graph EVAL_ID         an evaluation's steps and their dependencies, as JSON"
   , "  log-patterns SINCE UNIT...  errors and warnings in the units' journal since SINCE (e.g. -1h)"
   , "  ingest MACHINE FILE   load a saved agent /samples response (for testing)"
   ]
@@ -74,8 +76,9 @@ run cmd cfg rest = case (cmd, rest) of
         pollSec = fromMaybe 5 (pollSeconds cfg)
     benv <- newBlockerEnv
     cacheState <- newTVarIO Nothing
+    genv <- newGraphEnv
     tlsMgr <- newTlsManager
-    let env = Env d agentStates queue (static cfg) benv cacheState (maxConcurrentEvals cfg)
+    let env = Env d agentStates queue (static cfg) benv genv cacheState (maxConcurrentEvals cfg)
         settings = Warp.setHost (fromString host) (Warp.setPort port Warp.defaultSettings)
     hPutStrLn stderr ("hydrometer serving on " <> host <> ":" <> show port)
     mapConcurrently_ id $
@@ -101,6 +104,11 @@ run cmd cfg rest = case (cmd, rest) of
     qs <- maybe (pure emptyQueueState) (fetchQueueState mgr) (queueRunner cfg)
     benv <- newBlockerEnv
     r <- withConn d (\c -> evalBlockers benv c qs i)
+    BLC.putStrLn (A.encode r)
+  ("graph", [eid]) | [(i, "")] <- reads eid -> do
+    d <- openDb (fromMaybe (db cfg) (readOnlyDb cfg)) 1
+    genv <- newGraphEnv
+    r <- withConn d (\c -> evalGraph genv c i)
     BLC.putStrLn (A.encode r)
   ("log-patterns", since : units@(_ : _)) -> do
     ps <- journalPatterns (map T.pack units) since

@@ -17,6 +17,7 @@ module Hydrometer.UI.Common
   , fmtAgo
   , utcMs
   , shortDrv
+  , statusName
   , tableWidget
   , chartWidget
   , rangeSelector
@@ -133,6 +134,15 @@ utcMs t = round (utcTimeToPOSIXSeconds t * 1000)
 fmtAgo :: UTCTime -> Int64 -> Text
 fmtAgo t ms = fmtDuration (realToFrac (utcTimeToPOSIXSeconds t) - fromIntegral ms / 1000)
 
+-- | What hydra's build and step status codes mean.
+statusName :: Int -> Text
+statusName = \case
+  0 -> "succeeded"; 1 -> "failed"; 2 -> "dependency failed"; 3 -> "aborted"; 4 -> "cancelled"
+  6 -> "failed with output"; 7 -> "timed out"; 8 -> "cached failure"; 9 -> "unsupported system"
+  10 -> "log limit exceeded"; 11 -> "output size limit exceeded"; 12 -> "not deterministic"
+  13 -> "resolved"; 100 -> "busy"
+  s -> "status " <> T.pack (show s)
+
 -- | Drop the store hash and .drv suffix.
 shortDrv :: Text -> Text
 shortDrv t =
@@ -157,10 +167,12 @@ statSub k v s = elAttr "div" ("class" =: "stat" <> "title" =: (k <> ": " <> v <>
   elClass "div" "s" (text s)
 
 -- | How a table column is rendered, from its name.
-data Fmt = FMono | FNum | FBytes | FSecs | FTime | FPct | FLink Text
+data Fmt = FMono | FNum | FBytes | FSecs | FTime | FPct | FStatus | FTag | FLink Text
 
 columnFmt :: Text -> Fmt
 columnFmt c
+  | c `elem` ["status", "buildstatus"] = FStatus
+  | c `elem` ["step_kind"] = FTag
   | c `elem` ["build"] = FLink "#/build/"
   | c `elem` ["eval_id"] = FLink "#/eval/"
   | c `elem` ["machine"] = FLink "#/machine/"
@@ -174,11 +186,15 @@ columnFmt c
 cell :: DomBuilder t m => Text -> A.Value -> m ()
 cell col v = case (columnFmt col, v) of
   (_, A.Null) -> el "td" (text "")
+  (FLink _, A.String "") -> el "td" blank
   (FLink prefix, _) -> el "td" $ elAttr "a" ("href" =: (prefix <> plain v)) (text (plain v))
   (FTime, A.Number n) -> elClass "td" "num" (text (fmtTime (round (toRealFloat n :: Double))))
   (FBytes, A.Number n) -> elClass "td" "num" (text (fmtBytes (toRealFloat n)))
   (FSecs, A.Number n) -> elClass "td" "num" (text (fmtDuration (toRealFloat n)))
   (FPct, A.Number n) -> elClass "td" "num" (text (fmtPct (toRealFloat n)))
+  (FStatus, A.Number n) -> let s = round (toRealFloat n :: Double) in
+    el "td" $ elClass "span" ("tag " <> (if s == 0 then "status-ok" else "status-bad")) (text (statusName s))
+  (FTag, A.String s) -> el "td" $ elClass "span" ("tag kind-" <> s) (text s)
   (_, A.Number n) -> elClass "td" "num" (text (fmtNum (toRealFloat n)))
   (FMono, _) -> elAttr "td" ("class" =: "mono" <> "title" =: plain v) (text (plain v))
   _ -> el "td" (text (plain v))
@@ -206,15 +222,20 @@ tableWidget hidden tD = elClass "div" "scroll" $ dyn_ $ ffor tD $ \case
       el "tbody" $ dyn_ $ ffor sortD $ \(si, desc) -> do
         let key r = case drop si r of (x : _) -> sortKey x; [] -> SNull
             sorted = if si < 0 then rows else sortBy (if desc then comparing (Down . key) else comparing key) rows
-        mapM_ (\r -> el "tr" $ mapM_ (\(i, c) -> cell c (fromMaybe A.Null (lookupIx i r))) shown) sorted
+        mapM_ (\r -> elAttr "tr" (rowAttr cols r) $ mapM_ (\(i, c) -> cell c (fromMaybe A.Null (lookupIx i r))) shown) sorted
       pure cs
     pure ()
   where
     lookupIx i r = case drop i r of (x : _) -> Just x; [] -> Nothing
+    -- Substituted steps (fetched from a cache, not built) are dimmed.
+    rowAttr cs r = case lookup "step_kind" (zip cs r) of
+      Just (A.String "substituted") -> "class" =: "dim"
+      _ -> mempty
     -- A header is aligned like its cells: right when they are numbers
     -- (links stay left).
     numericIn rows i c = case columnFmt c of
       FLink _ -> False
+      FStatus -> False
       _ -> let vs = [ v | Just v <- map (lookupIx i) rows, v /= A.Null ]
            in not (null vs) && all (\case A.Number _ -> True; _ -> False) vs
 

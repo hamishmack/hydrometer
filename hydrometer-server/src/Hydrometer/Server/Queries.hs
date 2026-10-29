@@ -199,7 +199,8 @@ evalSummary c evalId = queryTable c
   \SELECT p.eval_id, p.project, p.jobset, (extract(epoch FROM p.evaluated) * 1000)::bigint AS evaluated, p.eval_s, \
   \  p.builds, p.finished, p.succeeded, p.failed, p.queued, \
   \  (extract(epoch FROM p.last_finish) * 1000)::bigint AS last_finish, \
-  \  (SELECT count(*) FROM steps) AS steps, \
+  \  (SELECT count(*) FROM steps WHERE step_kind = 'built') AS steps, \
+  \  (SELECT count(DISTINCT drvpath) FROM steps WHERE step_kind = 'substituted') AS substituted, \
   \  (SELECT count(*) FROM steps WHERE busy <> 0 AND stopped IS NULL) AS running_steps, \
   \  (SELECT round((sum(wall_s) / 3600.0)::numeric, 2) FROM steps) AS step_wall_h, \
   \  (SELECT round((sum(import_s) / 3600)::numeric, 2) FROM steps) AS import_h, \
@@ -218,7 +219,7 @@ evalSteps c evalId limit = queryTable c
   \  (extract(epoch FROM s.started) * 1000)::bigint AS started, \
   \  (extract(epoch FROM s.stopped) * 1000)::bigint AS stopped, \
   \  CASE WHEN s.busy <> 0 THEN extract(epoch FROM now() - s.started)::int ELSE s.wall_s END AS wall_s, \
-  \  s.status, s.busy, s.import_s, s.build_s, s.upload_s, s.cpu_s, s.avg_cores, s.peak_rss \
+  \  s.status, s.busy, s.step_kind, s.import_s, s.build_s, s.upload_s, s.cpu_s, s.avg_cores, s.peak_rss \
   \FROM hydrometer.v_step_usage s \
   \WHERE s.build IN (SELECT build FROM jobsetevalmembers WHERE eval = ?) \
   \ORDER BY wall_s DESC NULLS LAST LIMIT ?"
@@ -255,7 +256,7 @@ buildSteps :: Connection -> Int -> IO Table
 buildSteps c build = queryTable c
   "SELECT s.stepnr, s.drv_name, s.package, s.component_kind, s.platform, s.system, s.machine, \
   \  (extract(epoch FROM s.started) * 1000)::bigint AS started, \
-  \  (extract(epoch FROM s.stopped) * 1000)::bigint AS stopped, s.wall_s, s.status, s.busy, \
+  \  (extract(epoch FROM s.stopped) * 1000)::bigint AS stopped, s.wall_s, s.status, s.busy, s.step_kind, \
   \  s.import_s, s.build_s, s.upload_s, s.run_kind, s.cpu_s, s.avg_cores, s.peak_rss, s.net_rx_bytes \
   \FROM hydrometer.v_step_usage s WHERE s.build = ? ORDER BY s.stepnr"
   (Only build)

@@ -121,3 +121,13 @@ table.data tr:hover td { background: rgba(127,127,127,.06); }
 .evalstrip > .card.running { border-color: var(--accent); }
 @keyframes card-in { from { opacity: 0; transform: translateX(48px); } }
 @media (prefers-reduced-motion: reduce) { .evalstrip > .card { animation: none; } }
+.bar.done > div { background: var(--ok); }
+table.data tr.dim td { opacity: .55; }
+.tag.status-ok { background: #e3f5ea; color: #1e6b3d; }
+.tag.status-bad { background: #fde8e6; color: #7a1b14; }
+.tag.kind-substituted { background: var(--line); color: var(--muted); }
+.tag.kind-built { background: #e2ecfd; color: #1d4fa8; }
+@media (prefers-color-scheme: dark) {
+  .tag.status-ok { background: #1b3326; color: #a6dcb9; } .tag.status-bad { background: #3a1d1b; color: #ffc9c3; }
+  .tag.kind-built { background: #1e2c47; color: #a9c4f5; }
+}

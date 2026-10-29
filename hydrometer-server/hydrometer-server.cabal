@@ -33,6 +33,7 @@ library
                     Hydrometer.Server.Now
                     Hydrometer.Server.Queries
                     Hydrometer.Server.QueueRunner
+                    Hydrometer.Server.StepGraph
   build-depends:    base >=4.18 && <5
                   , file-embed
                   , postgresql-libpq

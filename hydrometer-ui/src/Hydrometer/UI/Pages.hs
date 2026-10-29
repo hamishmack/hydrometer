@@ -162,7 +162,7 @@ pastCard clock pD = elClass "div" "card" $ dyn_ $ ffor pD $ \p -> do
       elAttr "a" ("href" =: ("#/eval/" <> showT (pId p))) (text (pProject p <> ":" <> pJobset p))
     elClass "span" "sub" $ dynText (ffor clock (\c -> fmtAgo c (pEvaluated p) <> " ago"))
   elClass "div" "meters" $ do
-    meterRow "Built" (if pBuilds p > 0 then Just (fromIntegral (pFinished p) / fromIntegral (pBuilds p)) else Nothing)
+    progressRow "Built" (if pBuilds p > 0 then Just (fromIntegral (pFinished p) / fromIntegral (pBuilds p)) else Nothing) (pFailed p > 0)
       (showT (pFinished p) <> " / " <> showT (pBuilds p))
   elClass "div" "muted oneline" $ do
     elAttr "a" ("href" =: ("#/eval/" <> showT (pId p))) (text ("eval " <> showT (pId p)))
@@ -223,6 +223,15 @@ pendingCard clock running slots ps = do
           Just ts | not (null ts) -> Just (snd (minimum [ (t, (i, t)) | (i, t) <- zip [0 :: Int ..] ts ]))
           _ -> Nothing
         replaceAt i v xs = [ if j == i then v else x | (j, x) <- zip [0 ..] xs ]
+
+-- | Progress, not load: green when complete, red once anything failed.
+progressRow :: DomBuilder t m => Text -> Maybe Double -> Bool -> Text -> m ()
+progressRow label frac failed val = do
+  elClass "span" "label" (text label)
+  let f = maybe 0 (max 0 . min 1) frac
+      cls = if failed then "bar bad" else if f >= 1 then "bar done" else "bar"
+  elClass "div" cls $ elAttr "div" ("style" =: ("width:" <> showT (round (f * 100) :: Int) <> "%")) blank
+  elClass "span" "val" (text val)
 
 meterRow :: DomBuilder t m => Text -> Maybe Double -> Text -> m ()
 meterRow label frac val = do
@@ -424,7 +433,7 @@ evalPage eid = do
         stat "Builds" (txt "finished" <> " / " <> txt "builds")
         stat "Failed" (txt "failed")
         stat "Queued" (txt "queued")
-        stat "Steps running" (txt "running_steps")
+        statSub "Steps" (txt "steps" <> " built") (txt "substituted" <> " substituted, " <> txt "running_steps" <> " running")
         stat "Span" (maybe "–" (\h -> fmtDuration (h * 3600)) (numOf "span_h"))
         stat "Step wall time" (maybe "–" (\h -> fmtNum h <> " h") (numOf "step_wall_h"))
         stat "…importing" (maybe "–" (\h -> fmtNum h <> " h") (numOf "import_h"))
@@ -445,6 +454,10 @@ evalPage eid = do
   chartWidget "chart" "line" $ ffor (field "timeline" :: Dynamic t (Maybe Series)) $ fmap $ \s -> (s, A.object
     [ "cols" .= (["running_linux", "running_darwin", "unfinished_builds"] :: [Text])
     , "axes" .= A.object ["unfinished_builds" .= (1 :: Int)], "unit" .= ("" :: Text), "unit2" .= ("" :: Text) ])
+  el "h3" (text "Dependencies")
+  elClass "p" "muted" (text "Each step on a time line, with lines from the steps it waited for. Outlined: the critical path, the chain of last-finishing dependencies behind the last step to finish. A gap before a bar is time spent waiting for a machine after its inputs were ready. Grey: substituted (fetched from a binary cache by the queue runner, not built). The 300 longest steps are shown.")
+  gD <- fetchDyn Nothing (constDyn ("api/eval/" <> showT eid <> "/graph")) :: m (Dynamic t (Maybe A.Value))
+  chartWidget "chart fit" "depgraph" ((fmap (\g -> (g, A.object [])) <$> gD))
   el "h3" (text "Longest steps")
   tableWidget ["busy"] (field "steps")
 
