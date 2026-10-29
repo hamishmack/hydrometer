@@ -455,9 +455,14 @@ evalPage eid = do
     [ "cols" .= (["running_linux", "running_darwin", "unfinished_builds"] :: [Text])
     , "axes" .= A.object ["unfinished_builds" .= (1 :: Int)], "unit" .= ("" :: Text), "unit2" .= ("" :: Text) ])
   el "h3" (text "Dependencies")
-  elClass "p" "muted" (text "Each step on a time line, with lines from the steps it waited for. Outlined: the critical path, the chain of last-finishing dependencies behind the last step to finish. A gap before a bar is time spent waiting for a machine after its inputs were ready. Grey: substituted (fetched from a binary cache by the queue runner, not built). The 300 longest steps are shown.")
+  elClass "p" "muted" (text "Each step on a time line, with lines from the steps it waited for. Outlined: the critical path, the chain of last-finishing dependencies behind the last step to finish. Each attempt at a step is its own bar: green succeeded, red failed, orange aborted or cancelled, purple lost to a queue-runner restart, blue running, grey substituted (fetched from a binary cache by the queue runner, not built). A hatched amber stretch is a failed or lost attempt waiting to be retried. A gap before the first bar is time spent waiting for a machine after the inputs were ready. The 300 longest steps are shown.")
   gD <- fetchDyn Nothing (constDyn ("api/eval/" <> showT eid <> "/graph")) :: m (Dynamic t (Maybe A.Value))
-  chartWidget "chart fit" "depgraph" ((fmap (\g -> (g, A.object [])) <$> gD))
+  sD <- fetchDyn Nothing (constDyn ("api/eval/" <> showT eid <> "/substitutions")) :: m (Dynamic t (Maybe Table))
+  -- Drawn as soon as the graph arrives; again when the substitutions do.
+  chartWidget "chart fit" "depgraph" $ (\g s -> fmap (\gv -> (A.object ["graph" .= gv, "subst" .= s], A.object [])) g) <$> gD <*> sD
+  el "h3" (text "Substituted steps")
+  elClass "p" "muted" (text "Steps where the queue runner fetched outputs instead of building them. source: where the outputs came from (a LAN peer via peernix, or the first public cache that has them). downloaded: the closure paths added to the store while the step ran (NAR sizes, before compression; steps running at once may share them), by source in from. Worked out from linux-0's store and journal, so long-gone paths show less.")
+  tableWidget ["stepnr", "drv", "stopped"] sD
   el "h3" (text "Longest steps")
   tableWidget ["busy"] (field "steps")
 

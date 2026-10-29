@@ -30,6 +30,7 @@ import Hydrometer.Server.Maintain
 import Hydrometer.Server.Mcp
 import Hydrometer.Server.QueueRunner
 import Hydrometer.Server.StepGraph (evalGraph, newGraphEnv)
+import Hydrometer.Server.Substitutions (evalSubstitutions, newSubstEnv)
 
 usage :: String
 usage = unlines
@@ -41,6 +42,7 @@ usage = unlines
   , "  query SQL             run read-only SQL and print {columns, rows} as JSON"
   , "  blockers EVAL_ID      what an evaluation's unfinished builds wait on, as JSON"
   , "  graph EVAL_ID         an evaluation's steps and their dependencies, as JSON"
+  , "  substitutions EVAL_ID  where an evaluation's substituted steps came from, as JSON"
   , "  log-patterns SINCE UNIT...  errors and warnings in the units' journal since SINCE (e.g. -1h)"
   , "  ingest MACHINE FILE   load a saved agent /samples response (for testing)"
   ]
@@ -78,7 +80,8 @@ run cmd cfg rest = case (cmd, rest) of
     cacheState <- newTVarIO Nothing
     genv <- newGraphEnv
     tlsMgr <- newTlsManager
-    let env = Env d agentStates queue (static cfg) benv genv cacheState (maxConcurrentEvals cfg)
+    senv <- newSubstEnv tlsMgr (fromMaybe [] (substituters cfg)) [ (name a, url a) | a <- agents cfg ]
+    let env = Env d agentStates queue (static cfg) benv genv senv cacheState (maxConcurrentEvals cfg)
         settings = Warp.setHost (fromString host) (Warp.setPort port Warp.defaultSettings)
     hPutStrLn stderr ("hydrometer serving on " <> host <> ":" <> show port)
     mapConcurrently_ id $
@@ -109,6 +112,12 @@ run cmd cfg rest = case (cmd, rest) of
     d <- openDb (fromMaybe (db cfg) (readOnlyDb cfg)) 1
     genv <- newGraphEnv
     r <- withConn d (\c -> evalGraph genv c i)
+    BLC.putStrLn (A.encode r)
+  ("substitutions", [eid]) | [(i, "")] <- reads eid -> do
+    d <- openDb (fromMaybe (db cfg) (readOnlyDb cfg)) 1
+    tlsMgr <- newTlsManager
+    senv <- newSubstEnv tlsMgr (fromMaybe [] (substituters cfg)) [ (name a, url a) | a <- agents cfg ]
+    r <- withConn d (\c -> evalSubstitutions senv c i)
     BLC.putStrLn (A.encode r)
   ("log-patterns", since : units@(_ : _)) -> do
     ps <- journalPatterns (map T.pack units) since

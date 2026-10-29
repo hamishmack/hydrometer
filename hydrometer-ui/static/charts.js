@@ -187,6 +187,16 @@
   // step's last-finishing dependency) is outlined.
   function depgraph(el, json) {
     var g = JSON.parse(json), now = Date.now();
+    // Substituted steps' sources and sizes (api/eval/ID/substitutions), by .drv.
+    var subst = {};
+    if (g.graph) {
+      var t = g.subst;
+      if (t && t.columns) t.rows.forEach(function (r) {
+        var o = {}; t.columns.forEach(function (c, i) { o[c] = r[i]; });
+        if (!subst[o.drv]) subst[o.drv] = o;
+      });
+      g = g.graph;
+    }
     var nodes = g.nodes.map(function (n, i) { n.i = i; n.end = n.stop == null ? now : n.stop; n.deps = []; return n; });
     g.edges.forEach(function (e) { nodes[e[1]].deps.push(e[0]); });
     var order = nodes.slice().sort(function (a, b) { return a.start - b.start || a.end - b.end; });
@@ -205,12 +215,31 @@
       if (n.kind === "substituted") return dark ? "#5a6170" : "#b4bac6";
       return n.status === 0 ? "#2e9e5b" : "#d4453a";
     };
+    var critColour = dark ? "#e3e6ec" : "#1d2330";
+    var retryFill = dark ? "rgba(212,138,26,0.18)" : "rgba(212,138,26,0.22)", retryStroke = "#d48a1a";
+    // A node's attempts, each ending at its stop, or (lost to a queue-runner
+    // restart, so no stop) at the next attempt's start.
+    var attempts = function (n) {
+      var as = (n.attempts && n.attempts.length) ? n.attempts : [{ start: n.start, stop: n.stop, status: n.status, busy: n.busy, machine: n.machine }];
+      return as.map(function (a, k) {
+        var next = as[k + 1];
+        var lost = a.stop == null && !a.busy;
+        return { start: a.start, end: a.stop != null ? a.stop : (lost && next ? next.start : now), status: a.status, busy: a.busy, lost: lost, machine: a.machine };
+      });
+    };
+    var attemptColour = function (n, a) {
+      if (a.busy) return "#2f6fde";
+      if (a.lost) return "#8e5bd0";
+      if (a.status === 0) return n.kind === "substituted" ? (dark ? "#5a6170" : "#b4bac6") : "#2e9e5b";
+      if (a.status === 3 || a.status === 4) return "#d48a1a";
+      return "#d4453a";
+    };
     var lineColour = dark ? "rgba(200,205,215,0.25)" : "rgba(60,70,90,0.22)";
     var lines = [];
     nodes.forEach(function (n) {
       n.deps.forEach(function (j) {
         var d = nodes[j], c = critEdge[j + ">" + n.i];
-        lines.push({ coords: [[d.end, d.row], [n.start, n.row]], lineStyle: { color: c ? "#d48a1a" : lineColour, width: c ? 2 : 1 } });
+        lines.push({ coords: [[d.end, d.row], [n.start, n.row]], lineStyle: { color: c ? critColour : lineColour, width: c ? 2 : 1 } });
       });
     });
     var c = chart(el);
@@ -225,7 +254,18 @@
         return "<b>" + n.name + "</b><br>" + n.kind + (n.machine ? " on " + n.machine : "") + ", " +
           (n.stop == null ? "running" : (statusNames[n.status] || "status " + n.status)) + "<br>" +
           fmtSecs((n.end - n.start) / 1000) +
+          (subst[n.drv] ? "<br>from " + (subst[n.drv].source || "?") + ", downloaded " + fmtBytes(subst[n.drv].downloaded_bytes) +
+            " (" + subst[n.drv].downloaded_paths + " paths), closure " + fmtBytes(subst[n.drv].closure_bytes) : "") +
           (ready ? (n.start > ready ? ", started " + fmtSecs((n.start - ready) / 1000) + " after its inputs were ready" : "") : "") +
+          (function () {
+            var atts = attempts(n);
+            if (atts.length < 2) return "";
+            return atts.map(function (a, k) {
+              var what = a.busy ? "running" : a.lost ? "lost (queue runner restarted)" : (statusNames[a.status] || "status " + a.status);
+              var gap = atts[k + 1] && atts[k + 1].start > a.end ? ", retried " + fmtSecs((atts[k + 1].start - a.end) / 1000) + " later" : "";
+              return "<br>attempt " + (k + 1) + ": " + what + (a.machine ? " on " + a.machine : "") + ", " + fmtSecs((a.end - a.start) / 1000) + gap;
+            }).join("");
+          })() +
           "<br>" + n.deps.length + " dependencies shown" + (crit[n.i] ? "<br><b>on the critical path</b>" : "");
       } },
       xAxis: { type: "time" },
@@ -233,12 +273,23 @@
                axisLabel: { fontSize: 10, width: 180, overflow: "truncate", interval: 0 } },
       series: [{
         type: "custom",
+        // One bar per attempt, and a hatched gap where a failed or lost
+        // attempt waited to be retried.
         renderItem: function (params, api) {
-          var start = api.coord([api.value(0), api.value(2)]), end = api.coord([api.value(1), api.value(2)]);
-          var h = api.size([0, 1])[1] * 0.7;
-          var n = order[params.dataIndex];
-          return { type: "rect", shape: { x: start[0], y: start[1] - h / 2, width: Math.max(end[0] - start[0], 2), height: h },
-                   style: { fill: api.visual("color"), stroke: crit[n.i] ? "#d48a1a" : null, lineWidth: crit[n.i] ? 2 : 0 } };
+          var n = order[params.dataIndex], y = api.value(2);
+          var h = api.size([0, 1])[1] * 0.7, kids = [];
+          var rect = function (a, b, style) {
+            var s = api.coord([a, y]), e = api.coord([b, y]);
+            kids.push({ type: "rect", shape: { x: s[0], y: s[1] - h / 2, width: Math.max(e[0] - s[0], 2), height: h }, style: style });
+          };
+          var atts = attempts(n);
+          atts.forEach(function (a, k) {
+            rect(a.start, a.end, { fill: attemptColour(n, a) });
+            var next = atts[k + 1];
+            if (next && next.start > a.end) rect(a.end, next.start, { fill: retryFill, stroke: retryStroke, lineWidth: 1, lineDash: [3, 2] });
+          });
+          if (crit[n.i]) rect(n.start, n.end, { fill: "none", stroke: critColour, lineWidth: 2 });
+          return { type: "group", children: kids };
         },
         encode: { x: [0, 1], y: 2 },
         data: order.map(function (n) { return { value: [n.start, n.end, n.row], itemStyle: { color: colour(n) } }; }),

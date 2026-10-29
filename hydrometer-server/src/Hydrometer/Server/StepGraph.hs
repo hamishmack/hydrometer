@@ -70,17 +70,29 @@ evalGraph env c eid = do
       pure r
   where
     compute = do
-      -- One node per derivation (a substitution has a step per output).
+      -- One node per derivation, with each attempt at it: a step that
+      -- failed (or was lost to a queue-runner restart) and was retried has
+      -- several.  The same attempt can be recorded more than once (a
+      -- substitution has a step per output), hence the DISTINCT.
       rows <- query c
-        "SELECT s.drvpath, hydrometer.drv_name(s.drvpath), min(s.starttime)::bigint * 1000, \
-        \  CASE WHEN bool_or(s.busy <> 0) THEN NULL ELSE max(s.stoptime)::bigint * 1000 END, \
-        \  bool_or(s.busy <> 0), max(s.status), bool_and(s.type = 1), max(s.machine), min(s.build) \
-        \FROM buildsteps s \
-        \WHERE s.build IN (SELECT build FROM jobsetevalmembers WHERE eval = ?) AND s.starttime IS NOT NULL \
-        \GROUP BY s.drvpath"
+        "WITH a AS ( \
+        \  SELECT DISTINCT s.drvpath, s.starttime, \
+        \    CASE WHEN s.busy <> 0 OR s.stoptime < s.starttime THEN NULL ELSE s.stoptime END AS stoptime, \
+        \    s.busy <> 0 AS busy, s.status, s.type, s.machine, s.build \
+        \  FROM buildsteps s \
+        \  WHERE s.build IN (SELECT build FROM jobsetevalmembers WHERE eval = ?) AND s.starttime IS NOT NULL) \
+        \SELECT drvpath, hydrometer.drv_name(drvpath), min(starttime)::bigint * 1000, \
+        \  CASE WHEN bool_or(busy) THEN NULL ELSE max(stoptime)::bigint * 1000 END, \
+        \  bool_or(busy), (array_agg(status ORDER BY starttime DESC))[1], bool_and(type = 1), \
+        \  (array_agg(machine ORDER BY starttime DESC))[1], min(build), \
+        \  json_agg(json_build_object('start', starttime::bigint * 1000, 'stop', stoptime::bigint * 1000, \
+        \    'status', status, 'busy', busy, 'machine', machine) ORDER BY starttime) \
+        \FROM a GROUP BY drvpath"
         (Only eid)
-      let allNodes = [ Node d nm st sp busy status subst (fromMaybe "" m) b
-                     | (d, nm, Just st, sp, busy, status, subst, m, b) <- rows ]
+      let withAttempts = [ (Node d nm st sp busy status subst (fromMaybe "" m) b, attempts)
+                         | (d, nm, Just st, sp, busy, status, subst, m, b, attempts :: A.Value) <- rows ]
+          allNodes = map fst withAttempts
+          attemptsOf = M.fromList [ (nDrv n, a) | (n, a) <- withAttempts ]
           dur n = fromMaybe maxBound (nStop n) - nStart n
           kept = take maxNodes (sortOn (Down . dur) allNodes)
           keptSet = S.fromList (map nDrv kept)
@@ -123,7 +135,7 @@ evalGraph env c eid = do
             [ "name" .= nName n, "drv" .= T.takeWhileEnd (/= '/') (nDrv n), "start" .= nStart n, "stop" .= nStop n
             , "busy" .= nBusy n, "status" .= nStatus n
             , "kind" .= (if nSubstituted n then "substituted" else "built" :: Text)
-            , "machine" .= nMachine n, "build" .= nBuild n ]
+            , "machine" .= nMachine n, "build" .= nBuild n , "attempts" .= M.findWithDefault A.Null (nDrv n) attemptsOf ]
           | n <- kept ]
         , "edges" .= edges
         , "steps" .= length allNodes

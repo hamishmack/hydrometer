@@ -38,6 +38,7 @@ import Hydrometer.Server.Now (buildNow)
 import Hydrometer.Server.Queries
 import Hydrometer.Server.QueueRunner (QueueState)
 import Hydrometer.Server.StepGraph (GraphEnv, evalGraph)
+import Hydrometer.Server.Substitutions (SubstEnv, evalSubstitutions)
 
 data Env = Env
   { envDb     :: Db
@@ -46,6 +47,7 @@ data Env = Env
   , envStatic :: Maybe FilePath
   , envBlockers :: BlockerEnv
   , envGraph  :: GraphEnv
+  , envSubst  :: SubstEnv
   , envCache  :: TVar (Maybe CacheNow)
   , envEvalSlots :: Maybe Int
   }
@@ -65,6 +67,7 @@ apiIndex = A.object
       , "GET /api/eval/{id}" .= ("One evaluation: summary (time split into import/build/upload, CPU), timeline of running steps vs unfinished builds, and its longest steps." :: Text)
       , "GET /api/eval/{id}/blockers" .= ("What an evaluation's unfinished builds wait on: counts by state, and the steps holding the most builds, with why runnable ones are not dispatched." :: Text)
       , "GET /api/eval/{id}/graph" .= ("The steps of an evaluation (the 300 longest) and which of them each waited for, from the .drv files: nodes with start/stop, kind (built or substituted), status; edges [dependency, dependent] as node indexes." :: Text)
+      , "GET /api/eval/{id}/substitutions" .= ("An evaluation's substituted steps (the 300 longest): where the outputs came from (a LAN peer via peernix, or the first public cache that has them), what was downloaded (closure paths registered during the step, NAR bytes, by source), and output and closure sizes." :: Text)
       , "GET /api/build/{id}" .= ("The steps of one build with their resource use." :: Text)
       , "GET /api/step/{build}/{stepnr}/series" .= ("CPU cores, memory and network of one step over its life." :: Text)
       ]
@@ -123,6 +126,7 @@ app env req respond = do
           qs <- readTVarIO (envQueue env)
           withConn db (\c -> evalBlockers (envBlockers env) c qs eid) >>= ok
       ["api", "eval", i, "graph"] | Just eid <- readMaybe (T.unpack i) -> withConn db (\c -> evalGraph (envGraph env) c eid) >>= ok
+      ["api", "eval", i, "substitutions"] | Just eid <- readMaybe (T.unpack i) -> withConn db (\c -> evalSubstitutions (envSubst env) c eid) >>= ok
       ["api", "build", i] | Just bid <- readMaybe (T.unpack i) -> withConn db (\c -> buildSteps c bid) >>= ok
       ["api", "step", b, s, "series"] | Just bid <- readMaybe (T.unpack b), Just sn <- readMaybe (T.unpack s) ->
           withConn db (\c -> stepSeries c bid sn) >>= ok

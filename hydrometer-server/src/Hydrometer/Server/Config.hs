@@ -44,6 +44,9 @@ data Config = Config
   , maxConcurrentEvals :: Maybe Int
     -- ^ hydra-evaluator's max_concurrent_evals (default 1), for the
     -- pending evaluations' estimated start times.
+  , substituters  :: Maybe [Text]
+    -- ^ The public binary caches nix substitutes from, in the order it tries
+    -- them, to say where a substituted path came from.
   } deriving stock (Show, Generic)
 
 instance FromJSON Config

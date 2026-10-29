@@ -19,6 +19,7 @@ let
     cacheUrl = cfg.cacheUrl;
     logUnits = cfg.logUnits;
     maxConcurrentEvals = cfg.maxConcurrentEvals;
+    substituters = cfg.substituters;
   });
   # `hydrometer` on PATH with the config baked in, for `hydrometer mcp` and
   # `hydrometer query` (both use the read-only role).
@@ -38,6 +39,12 @@ in {
     listen = mkOption { type = types.str; default = "127.0.0.1:9185"; };
     queueRunner = mkOption { type = types.nullOr types.str; default = "http://[::1]:8080"; description = "The queue runner's REST API."; };
     retentionDays = mkOption { type = types.int; default = 14; description = "Days of raw samples to keep (rollups are kept a year)."; };
+    substituters = mkOption {
+      type = types.listOf types.str;
+      default = builtins.filter (lib.hasPrefix "https://") (config.nix.settings.substituters or [ ]);
+      defaultText = lib.literalExpression "the https entries of nix.settings.substituters";
+      description = "Public binary caches, in the order nix tries them (by priority), to say where a substituted step's paths came from. Paths found on a LAN peer are named from peernix's journal.";
+    };
     cacheUrl = mkOption {
       type = types.nullOr types.str; default = null; example = "https://cache.zw3rk.com";
       description = "Binary cache finished outputs should reach; a sample of recent outputs is looked up on it every 10 minutes.";
@@ -75,8 +82,8 @@ in {
     (mkIf cfg.enable {
       users.users.hydrometer = {
         isSystemUser = true; group = "hydrometer";
-        # To read the journal of cfg.logUnits.
-        extraGroups = lib.optional (cfg.logUnits != [ ]) "systemd-journal";
+        # To read the journal of cfg.logUnits, and peernix's.
+        extraGroups = [ "systemd-journal" ];
       };
       users.groups.hydrometer = { };
       environment.systemPackages = [ cli ];
@@ -108,6 +115,8 @@ in {
 
       systemd.services.hydrometer = {
         description = "hydrometer collector and API";
+        # nix-store and nix path-info, for substituted steps' sizes.
+        path = [ config.nix.package ];
         wantedBy = [ "multi-user.target" ];
         # After the setup unit: that is where the roles and schema are made.
         after = [ "${setupUnit}.service" "network-online.target" ];
