@@ -201,7 +201,7 @@ tableWidget hidden tD = elClass "div" "scroll" $ dyn_ $ ffor tD $ \case
     sortD <- foldDyn (\i (j, desc) -> if i == j then (j, not desc) else (i, True)) (-1, True) clicks
     clicks <- elClass "table" "data" $ do
       cs <- el "thead" $ el "tr" $ fmap leftmost $ mapM (\(i, c) -> do
-              (e, _) <- el' "th" (text (T.replace "_" " " c))
+              (e, _) <- elAttr' "th" (if numericIn rows i c then "class" =: "num" else mempty) (text (columnLabel c))
               pure (i <$ domEvent Click e)) shown
       el "tbody" $ dyn_ $ ffor sortD $ \(si, desc) -> do
         let key r = case drop si r of (x : _) -> sortKey x; [] -> SNull
@@ -211,6 +211,18 @@ tableWidget hidden tD = elClass "div" "scroll" $ dyn_ $ ffor tD $ \case
     pure ()
   where
     lookupIx i r = case drop i r of (x : _) -> Just x; [] -> Nothing
+    -- A header is aligned like its cells: right when they are numbers
+    -- (links stay left).
+    numericIn rows i c = case columnFmt c of
+      FLink _ -> False
+      _ -> let vs = [ v | Just v <- map (lookupIx i) rows, v /= A.Null ]
+           in not (null vs) && all (\case A.Number _ -> True; _ -> False) vs
+
+-- | A column's header.
+columnLabel :: Text -> Text
+columnLabel = \case
+  "eval_s" -> "duration"
+  c -> T.replace "_" " " c
 
 data SortKey = SNull | SNum Double | SText Text deriving (Eq, Ord)
 

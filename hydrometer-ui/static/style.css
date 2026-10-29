@@ -81,13 +81,18 @@ table.data td.reason { white-space: normal; min-width: 280px; }
 @media (prefers-color-scheme: dark) {
   .tag.vm { background: #1e2c47; color: #a9c4f5; } .tag.native { background: #1b3326; color: #a6dcb9; } .tag.ifd { background: #3a2617; color: #f0c19d; }
 }
-table.data { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; font-size: 12px; }
+table.data { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: clip; font-size: 12px; }
 table.data th, table.data td { padding: 5px 8px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
 table.data th { color: var(--muted); font-weight: 600; cursor: pointer; user-select: none; background: var(--bg); }
+/* The header stays in view while the rows scroll (inside .scroll; `overflow:
+   clip` above, unlike hidden, does not stop it sticking).  Collapsed borders
+   scroll away with the rows, so its line is a shadow. */
+table.data thead th { position: sticky; top: 0; z-index: 1; box-shadow: inset 0 -1px var(--line); }
+table.data th.num { text-align: right; }
 table.data td.num { text-align: right; font-family: var(--mono); }
 table.data td.mono { font-family: var(--mono); max-width: 520px; overflow: hidden; text-overflow: ellipsis; }
 table.data tr:hover td { background: rgba(127,127,127,.06); }
-.scroll { overflow-x: auto; }
+.scroll { overflow: auto; max-height: calc(100vh - 120px); }
 .chart { width: 100%; height: 280px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
 .chart.tall { height: 420px; }
 .chart.fit { height: auto; min-height: 200px; }
@@ -107,3 +112,12 @@ table.data tr:hover td { background: rgba(127,127,127,.06); }
 .loading { color: var(--muted); padding: 20px; }
 .two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 @media (max-width: 1000px) { .two { grid-template-columns: 1fr; } }
+/* Evaluations on the Now page: newest first in the DOM and laid out right to
+   left, so the strip opens at its newest end and old cards leave on the
+   left, under the fade. */
+.evalstrip { display: flex; flex-direction: row-reverse; align-items: flex-start; gap: 12px; overflow-x: auto; padding-bottom: 6px;
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 72px); mask-image: linear-gradient(to right, transparent 0, #000 72px); }
+.evalstrip > .card { flex: 0 0 340px; animation: card-in .6s ease-out; }
+.evalstrip > .card.running { border-color: var(--accent); }
+@keyframes card-in { from { opacity: 0; transform: translateX(48px); } }
+@media (prefers-reduced-motion: reduce) { .evalstrip > .card { animation: none; } }

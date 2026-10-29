@@ -16,7 +16,9 @@ import Data.Aeson qualified as A
 import Data.Aeson.Types qualified as A
 import Data.Map.Strict qualified as M
 import Data.List (partition)
+import Data.Int (Int64)
 import Data.Maybe (fromMaybe, isJust)
+import Data.Ord (Down (..))
 import Data.Scientific (toRealFloat)
 import Data.Set qualified as S
 import Data.Text (Text)
@@ -40,8 +42,8 @@ nowPage = mdo
   -- Machines whose orphaned-steps list is expanded.  Kept outside the
   -- rebuild below, which happens on every refresh.
   openD <- foldDyn (\k o -> if S.member k o then S.delete k o else S.insert k o) S.empty toggles
-  toggles <- switchHold never <=< dyn $ ffor nowD $ \case
-    Nothing -> loading >> pure never
+  dyn_ $ ffor nowD $ \case
+    Nothing -> loading
     Just n -> do
       forM_ (nAlerts n) $ \a -> elClass "div" ("alert " <> alLevel a) (text (alMessage a))
       let ms = nMachines n
@@ -68,24 +70,18 @@ nowPage = mdo
           (maybe "recent outputs on cache" (\q -> "on cache · queue " <> showT q) (cnQueued cn))
         statSub "Evaluating" (showT (length (nEvals n)))
           (let k = length (nPendingEvals n) in if k == 0 then "" else showT k <> " pending")
-      when (not (null (nEvals n) && null (nPendingEvals n))) $ do
-        el "h3" (text "Evaluations")
-        elClass "div" "grid" $ do
-          forM_ (nEvals n) $ \e -> elClass "div" "card" $ do
-            elClass "div" "title" $ do
-              elClass "span" "name" (text (eProject e <> ":" <> eJobset e))
-              elClass "span" "sub" $ dynText (ffor clock $ \c -> maybe "" (\s -> "running " <> fmtAgo c s) (eStarted e))
-            elClass "div" "meters" $ do
-              meterRow "CPU" ((/ 16) <$> eCores e) (maybe "" (\x -> fmtFixed 1 x <> " cores") (eCores e))
-              meterRow "Mem" Nothing (maybe "" (fmtBytes . fromIntegral) (eRss e))
-            elClass "div" "muted oneline" $ forM_ (eLastEval e) $ \i -> do
-              text "previous: "
-              elAttr "a" ("href" =: ("#/eval/" <> showT i)) (text ("eval " <> showT i))
-          when (not (null (nPendingEvals n))) $ pendingCard clock (nEvals n) (fromMaybe 1 (nEvalSlots n)) (nPendingEvals n)
+  el "h3" (text "Evaluations")
+  evalStrip clock nowD
+  toggles <- switchHold never <=< dyn $ ffor nowD $ \case
+    Nothing -> pure never
+    Just n -> do
+      let ms = nMachines n
       when (not (null (nLogPatterns n))) $ do
         el "h3" (text "Hydra log errors and warnings (15 min)")
         elClass "div" "scroll" $ elClass "table" "data" $ do
-          el "thead" $ el "tr" $ mapM_ (el "th" . text) ["count", "unit", "level", "message"]
+          el "thead" $ el "tr" $ do
+            elClass "th" "num" (text "count")
+            mapM_ (el "th" . text) ["unit", "level", "message"]
           el "tbody" $ forM_ (nLogPatterns n) $ \l -> el "tr" $ do
             elClass "td" "num" (text (showT (lpCount l)))
             el "td" (text (lpUnit l))
@@ -105,9 +101,91 @@ cpuGauge frac v sub = elAttr "div" ("class" =: "stat gauge" <> "title" =: ("CPU 
     elClass "div" "s" (text v)
     elClass "div" "s" (text sub)
 
+-- | A finished evaluation, from @api/evals@.
+data PastEval = PastEval
+  { pId :: Int, pProject :: Text, pJobset :: Text, pEvaluated :: Int64
+  , pEvalS :: Maybe Double, pBuilds :: Int, pFinished :: Int, pFailed :: Int, pQueued :: Int }
+  deriving stock Eq
+
+pastEvals :: Table -> [PastEval]
+pastEvals (Table cols rows) =
+  [ PastEval { pId = i, pProject = str "project", pJobset = str "jobset", pEvaluated = int "evaluated"
+             , pEvalS = num "eval_s", pBuilds = int "builds", pFinished = int "finished"
+             , pFailed = int "failed", pQueued = int "queued" }
+  | r <- rows
+  , let get c = M.lookup c (M.fromList (zip cols r))
+        num c = case get c of Just (A.Number n) -> Just (toRealFloat n :: Double); _ -> Nothing
+        int :: Num a => Text -> a
+        int c = maybe 0 (fromIntegral . (round :: Double -> Integer)) (num c)
+        str c = case get c of Just (A.String s) -> s; _ -> ""
+  , Just i <- [round <$> num "eval_id"] ]
+
+data EvalCard = CPast PastEval | CRunning EvalNow | CPending
+  deriving stock Eq
+
+-- | Evaluations as a strip of cards, oldest on the left: the last ten that
+-- finished, the running ones, then the queue.  Cards are keyed, so they
+-- outlive the page's refreshes: a new one slides in on the right and old
+-- ones leave on the left, under a fade.  The strip scrolls sideways and
+-- starts at its newest (right) end: it is laid out right to left with the
+-- newest card first.
+evalStrip :: forall t m. W t m => Dynamic t UTCTime -> Dynamic t (Maybe NowResponse) -> m ()
+evalStrip clock nowD = do
+  runKeys <- holdUniqDyn (maybe [] (map (\e -> (eProject e, eJobset e))) . fmap nEvals <$> nowD)
+  -- Fetched again when an evaluation starts or finishes (the parameter
+  -- only changes the URL), and every 30 s.
+  changes <- count (updated runKeys)
+  vD <- fetchDyn (Just 30) ((\k -> "api/evals?limit=10&changes=" <> showT (k :: Int)) <$> changes) :: m (Dynamic t (Maybe A.Value))
+  let pastD = maybe [] pastEvals . (>>= A.parseMaybe (A.withObject "e" (A..: "evals"))) <$> vD
+      cardsD = do
+        past <- pastD
+        n <- nowD
+        let running = maybe [] nEvals n
+            pending = maybe [] nPendingEvals n
+        pure $ M.fromList $
+          [ (Down (0 :: Int, pEvaluated p, showT (pId p)), CPast p) | p <- past ]
+          ++ [ (Down (1, fromMaybe 0 (eStarted e), eProject e <> ":" <> eJobset e), CRunning e) | e <- running ]
+          ++ [ (Down (2, 0, ""), CPending) | not (null pending) ]
+  -- A key always holds the same kind of card; its figures update in place.
+  _ <- elClass "div" "evalstrip" $ listWithKey cardsD $ \_ cD -> sample (current cD) >>= \case
+    CPast p0 -> pastCard clock ((\case CPast p -> p; _ -> p0) <$> cD)
+    CRunning e0 -> runningCard clock ((\case CRunning e -> e; _ -> e0) <$> cD)
+    CPending -> elClass "div" "card pending" $ dyn_ $ ffor nowD $ \case
+      Just n -> pendingCard clock (nEvals n) (fromMaybe 1 (nEvalSlots n)) (nPendingEvals n)
+      Nothing -> blank
+  pure ()
+
+pastCard :: W t m => Dynamic t UTCTime -> Dynamic t PastEval -> m ()
+pastCard clock pD = elClass "div" "card" $ dyn_ $ ffor pD $ \p -> do
+  elClass "div" "title" $ do
+    elAttr "span" ("class" =: "name" <> "title" =: (pProject p <> ":" <> pJobset p)) $
+      elAttr "a" ("href" =: ("#/eval/" <> showT (pId p))) (text (pProject p <> ":" <> pJobset p))
+    elClass "span" "sub" $ dynText (ffor clock (\c -> fmtAgo c (pEvaluated p) <> " ago"))
+  elClass "div" "meters" $ do
+    meterRow "Built" (if pBuilds p > 0 then Just (fromIntegral (pFinished p) / fromIntegral (pBuilds p)) else Nothing)
+      (showT (pFinished p) <> " / " <> showT (pBuilds p))
+  elClass "div" "muted oneline" $ do
+    elAttr "a" ("href" =: ("#/eval/" <> showT (pId p))) (text ("eval " <> showT (pId p)))
+    text $ T.concat
+      [ maybe "" (\s -> " · took " <> fmtDuration s) (pEvalS p)
+      , if pFailed p > 0 then " · " <> showT (pFailed p) <> " failed" else ""
+      , if pQueued p > 0 then " · " <> showT (pQueued p) <> " queued" else "" ]
+
+runningCard :: W t m => Dynamic t UTCTime -> Dynamic t EvalNow -> m ()
+runningCard clock eD = elClass "div" "card running" $ dyn_ $ ffor eD $ \e -> do
+  elClass "div" "title" $ do
+    elAttr "span" ("class" =: "name" <> "title" =: (eProject e <> ":" <> eJobset e)) (text (eProject e <> ":" <> eJobset e))
+    elClass "span" "sub" $ dynText (ffor clock $ \c -> maybe "running" (\s -> "running " <> fmtAgo c s) (eStarted e))
+  elClass "div" "meters" $ do
+    meterRow "CPU" ((/ 16) <$> eCores e) (maybe "" (\x -> fmtFixed 1 x <> " cores") (eCores e))
+    meterRow "Mem" Nothing (maybe "" (fmtBytes . fromIntegral) (eRss e))
+  elClass "div" "muted oneline" $ forM_ (eLastEval e) $ \i -> do
+    text "previous: "
+    elAttr "a" ("href" =: ("#/eval/" <> showT i)) (text ("eval " <> showT i))
+
 -- | The evaluator's queue, in the order it will start the evaluations.
 pendingCard :: W t m => Dynamic t UTCTime -> [EvalNow] -> Int -> [PendingEval] -> m ()
-pendingCard clock running slots ps = elClass "div" "card pending" $ do
+pendingCard clock running slots ps = do
   elClass "div" "title" $ do
     elClass "span" "name" (text "Pending")
     elClass "span" "sub" (text (showT (length ps) <> " waiting, in start order"))
@@ -381,7 +459,9 @@ blockersView clock b = do
     statSub "Waiting on dependencies" (showT (ebBlocked b)) "see the steps below"
     statSub "Other" (showT (ebOther b)) "not queued, or dep failed"
   if null (ebBlockers b) then blank else elClass "div" "scroll" $ elClass "table" "data" $ do
-    el "thead" $ el "tr" $ mapM_ (el "th" . text) ["builds held", "step", "state", "where", "since", "why it is not moving"]
+    el "thead" $ el "tr" $ do
+      elClass "th" "num" (text "builds held")
+      mapM_ (el "th" . text) ["step", "state", "where", "since", "why it is not moving"]
     el "tbody" $ forM_ (ebBlockers b) $ \x -> el "tr" $ do
       elClass "td" "num" (text (showT (blBuilds x)))
       elAttr "td" ("class" =: "mono" <> "title" =: blDrvPath x) (text (blName x))

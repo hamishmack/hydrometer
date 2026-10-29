@@ -71,26 +71,54 @@ whyNotDispatched :: [QrRegistration] -> Text -> [Text] -> Maybe Text
 whyNotDispatched regs system features
   | null able = Just ("no builder offers " <> system <> needing)
   | any usable able = Nothing
-  | otherwise = Just ("only " <> T.intercalate ", " (map qrHost able) <> " can take "
-      <> "them, and "
-      <> (if length able == 1 then "it has" else "they have") <> " no capacity ("
-      <> T.intercalate "; " [ qrHost r <> ": " <> noCapacity r | r <- able ] <> ")")
+  | otherwise = Just ("only " <> hosts (M.keys perHost) <> " can take them, and "
+      <> (if M.size perHost == 1 then "it has" else "they have") <> " no capacity ("
+      <> T.intercalate "; " [ hosts hs <> ": " <> why | (why, hs) <- M.toList byWhy ] <> ")")
   where
     needing = if null features then "" else " with " <> T.intercalate ", " features
     able = [ r | r <- regs, system `elem` qrSystems r
                , all (`elem` (qrSupported r ++ qrMandatory r)) features
                , all (`elem` features) (qrMandatory r) ]
     usable r = qrHasCapacity r && not (qrDisabled r)
-    noCapacity r = case concat
-        [ [ "disabled" | qrDisabled r ]
-        , [ "nix store " <> pct f <> " free, minimum " <> pct m | Just f <- [qrStoreFree r], Just m <- [qrStoreMin r], f < m ]
-        , [ "build dir " <> pct f <> " free, minimum " <> pct m | Just f <- [qrBuildDirFree r], Just m <- [qrBuildDirMin r], f < m ]
-        , [ "load " <> num l <> ", maximum " <> num m | Just l <- [qrLoad1 r], Just m <- [qrLoad1Max r], l > m ]
-        , [ "all " <> T.pack (show (qrMaxJobs r)) <> " slots busy" | qrCurrentJobs r >= qrMaxJobs r ] ] of
-      [] -> "no capacity"
-      rs -> T.intercalate ", " rs
+    hosts = hostList (map qrHost regs)
+    -- A Mac registers several builders: merge each host's reasons, then
+    -- list hosts with the same reasons together.  The reasons leave out
+    -- per-host figures (load, slots) so that hosts group; the machine
+    -- cards show them.
+    perHost = M.fromListWith S.union [ (qrHost r, S.fromList (noCapacity r)) | r <- able ]
+    byWhy = M.fromListWith (++)
+      [ (if S.null rs then "no capacity" else T.intercalate ", " (map snd (S.toList rs)), [h])
+      | (h, rs) <- M.toList perHost ]
+    noCapacity r = concat
+      [ [ (0 :: Int, "disabled") | qrDisabled r ]
+      , [ (1, "nix store under " <> pct m <> " free") | Just f <- [qrStoreFree r], Just m <- [qrStoreMin r], f < m ]
+      , [ (2, "build dir under " <> pct m <> " free") | Just f <- [qrBuildDirFree r], Just m <- [qrBuildDirMin r], f < m ]
+      , [ (3, "load over " <> num m) | Just l <- [qrLoad1 r], Just m <- [qrLoad1Max r], l > m ]
+      , [ (4, "all slots busy") | qrCurrentJobs r >= qrMaxJobs r ] ]
     pct x = T.pack (showFFloat (Just 0) x "") <> "%"
     num x = T.pack (showFFloat (Just 1) x "")
+
+-- | Host names, shortened by their common prefix: @aarch64-darwin-*@ when
+-- they are every one of @known@ named @aarch64-darwin-…@, otherwise
+-- @aarch64-darwin-{6..9,b,d}@.
+hostList :: [Text] -> [Text] -> Text
+hostList known hs = T.intercalate ", " (concatMap one (M.toList (byPrefix hs)))
+  where
+    byPrefix xs = M.fromListWith S.union [ (T.dropWhileEnd (/= '-') h, S.singleton (T.takeWhileEnd (/= '-') h)) | h <- xs ]
+    everyKnown = byPrefix known
+    one (p, ss)
+      | T.null p || S.size ss == 1 = [ p <> s | s <- S.toList ss ]
+      | M.lookup p everyKnown == Just ss = [p <> "*"]
+      | otherwise = [p <> "{" <> T.intercalate "," (ranges (S.toList ss)) <> "}"]
+    -- Single-character suffixes (the Macs are 1-9, a-f) in runs: 6..9.
+    ranges ss
+      | all ((== 1) . T.length) ss = map range (foldr add [] (concatMap T.unpack ss))
+      | otherwise = ss
+    add c ((d : ds) : rs) | lookup c (zip digits (drop 1 digits)) == Just d = (c : d : ds) : rs
+    add c rs = [c] : rs
+    range r@(a : _ : _ : _) = T.pack [a, '.', '.', last r]
+    range r = T.intercalate "," (map T.singleton r)
+    digits = ['0' .. '9'] ++ ['a' .. 'z']
 
 toMs :: UTCTime -> Int64
 toMs t = round (utcTimeToPOSIXSeconds t * 1000)
