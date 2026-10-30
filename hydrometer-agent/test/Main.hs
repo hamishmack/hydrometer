@@ -44,6 +44,11 @@ main = do
     (Just (RootInfo Evaluation "ican-group-haskell-nix:master" [] Nothing))
     (identifyEval ["/nix/store/p-perl/bin/perl", "/nix/store/h-hydra/bin/.hydra-eval-jobset-wrapped", "ican-group-haskell-nix", "master"])
 
+  let evalProc comm = Proc 1 1 0 0 0 0 0 0 0 0 comm "/nix/store/p-perl/bin/perl"
+  check "isEvalRoot" True (isEvalRoot (evalProc "hydra-eval-jobs"))
+  check "isEvalRoot wrapped" True (isEvalRoot (evalProc ".hydra-eval-job"))
+  check "isEvalRoot nix-eval-jobs" False (isEvalRoot (evalProc "nix-eval-jobs"))
+
   -- A process table: launchd(1), nix-daemon(100, root) -> worker(101, root)
   -- -> nix-linux-builder(200, uid 310) ; VM(201, uid 310, ppid 1);
   -- worker -> bash(300, uid 311) -> clang(301, uid 311);

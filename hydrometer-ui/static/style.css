@@ -42,6 +42,8 @@ h3 { font-size: 14px; margin: 14px 0 8px; color: var(--muted); text-transform: u
 .bar > div { height: 100%; background: var(--accent); }
 .bar.warn > div { background: var(--warn); }
 .bar.bad > div { background: var(--bad); }
+/* Evaluated jobs: not built, so not the colours of progress. */
+.bar.jobs > div { background: var(--muted); }
 .spark { height: 40px; }
 .slots { margin-top: 6px; border-top: 1px solid var(--line); }
 .slot { padding: 5px 0; border-bottom: 1px dashed var(--line); font-size: 12px; }

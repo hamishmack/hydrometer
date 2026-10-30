@@ -328,16 +328,29 @@ pendingEvals c = query_ c $
 -- | The median duration (checkout + eval, seconds) of the last five
 -- evaluations of the jobset @j@.
 typicalEvalSeconds :: Query
-typicalEvalSeconds =
+typicalEvalSeconds = typicalEvalSecondsOf "j"
+
+typicalEvalSecondsOf :: Query -> Query
+typicalEvalSecondsOf alias =
   "(SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY x.s)::int FROM \
   \  (SELECT checkouttime + evaltime AS s FROM jobsetevals \
-  \   WHERE jobset_id = j.id ORDER BY id DESC LIMIT 5) x)"
+  \   WHERE jobset_id = " <> alias <> ".id ORDER BY id DESC LIMIT 5) x)"
 
-runningEvals :: Connection -> IO [(Text, Text, Maybe Int64, Maybe Int, Maybe Int, Maybe Int)]
+-- | Running evaluations, with their jobset's previous evaluation, or when
+-- there is none (a new pull request), the project's master's, as a guide
+-- to how long they take and how many jobs they have.
+runningEvals :: Connection -> IO [(Text, Text, Maybe Int64, Maybe Int, Maybe Int, Maybe Int, Maybe Text, Maybe Int)]
 runningEvals c = query_ c $
   "SELECT j.project, j.name, j.starttime::bigint * 1000, \
-  \  e.id, e.checkouttime + e.evaltime, " <> typicalEvalSeconds <> " \
+  \  e.id, e.checkouttime + e.evaltime, " <> typicalEvalSecondsOf "g" <> ", \
+  \  CASE WHEN g.id <> j.id THEN g.name END, \
+  \  (SELECT nrbuilds FROM jobsetevals WHERE jobset_id = g.id AND hasnewbuilds = 1 \
+  \   ORDER BY id DESC LIMIT 1) \
   \FROM jobsets j \
+  \LEFT JOIN LATERAL (SELECT gj.id, gj.name FROM jobsets gj \
+  \  WHERE gj.project = j.project AND (gj.id = j.id OR gj.name = 'master') \
+  \    AND EXISTS (SELECT 1 FROM jobsetevals WHERE jobset_id = gj.id) \
+  \  ORDER BY gj.id = j.id DESC LIMIT 1) g ON true \
   \LEFT JOIN LATERAL (SELECT id, checkouttime, evaltime FROM jobsetevals \
-  \  WHERE jobset_id = j.id ORDER BY id DESC LIMIT 1) e ON true \
+  \  WHERE jobset_id = g.id ORDER BY id DESC LIMIT 1) e ON true \
   \WHERE j.starttime IS NOT NULL ORDER BY j.starttime"

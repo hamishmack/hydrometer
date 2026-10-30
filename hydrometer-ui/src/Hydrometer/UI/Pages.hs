@@ -173,20 +173,50 @@ pastCard clock pD = elClass "div" "card" $ dyn_ $ ffor pD $ \p -> do
 
 runningCard :: W t m => Dynamic t UTCTime -> Dynamic t EvalNow -> m ()
 runningCard clock eD = elClass "div" "card running" $ dyn_ $ ffor eD $ \e -> do
+  let phase = case ePhase e of
+        Just "fetching" -> "fetching inputs"
+        Just "adding" -> "adding builds"
+        Just "evaluating" -> "evaluating"
+        _ -> "running"
+      -- The usual duration is steadier than the previous one alone.
+      guideS = fromIntegral <$> maybe (eLastEvalSeconds e) Just (eTypicalSeconds e) :: Maybe Double
+      elapsed c = (\s -> fromIntegral (utcMs c - s) / 1000) <$> eStarted e
   elClass "div" "title" $ do
     elAttr "span" ("class" =: "name" <> "title" =: (eProject e <> ":" <> eJobset e)) (text (eProject e <> ":" <> eJobset e))
-    elClass "span" "sub" $ dynText (ffor clock $ \c -> maybe "running" (\s -> "running " <> fmtAgo c s) (eStarted e))
+    elClass "span" "sub" $ dynText (ffor clock $ \c -> maybe phase (\s -> phase <> " " <> fmtAgo c s) (eStarted e))
   elClass "div" "meters" $ do
+    -- Time so far against the usual duration: the only measure from the
+    -- start, and the only one at all without hydra's progress lines.
+    forM_ guideS $ \g -> dyn_ $ ffor clock $ \c -> forM_ (elapsed c) $ \t -> do
+      elClass "span" "label" (text "Time")
+      elClass "div" (if t > g then "bar warn" else "bar") $
+        elAttr "div" ("style" =: ("width:" <> showT (round (100 * min 1 (t / g)) :: Int) <> "%")) blank
+      elClass "span" "val" (text (if t > g then "+" <> fmtDuration (t - g) else fmtPct (t / g)))
+    -- Jobs are grey: evaluated, not built.  Hydra adds them as builds only
+    -- when the evaluation finishes.
+    let jobsRow label done total approx tip = do
+          elAttr "span" ("class" =: "label" <> "title" =: tip) (text label)
+          elAttr "div" ("class" =: "bar jobs" <> "title" =: tip) $
+            elAttr "div" ("style" =: ("width:" <> showT (round (100 * maybe 0 (\n -> min 1 (fromIntegral done / fromIntegral (max 1 n))) total :: Double) :: Int) <> "%")) blank
+          elAttr "span" ("class" =: "val" <> "title" =: tip) (text (showT done <> maybe "" (\n -> " / " <> (if approx then "~" else "") <> showT n) total))
+    case (ePhase e, eJobsEvaluated e) of
+      (Just "adding", Just n) -> forM_ (eJobsChecked e) $ \i -> jobsRow "Adding" i (Just n) False
+        "Evaluated jobs checked against existing builds; the new ones are added as builds when this finishes."
+      (_, Just n) -> jobsRow "Jobs" (n - fromMaybe 0 (eJobsFailed e)) (eGuideJobs e) True
+        "Jobs evaluated so far, against how many the previous evaluation had. None is built yet: hydra adds them as builds when the evaluation finishes."
+      _ -> blank
     meterRow "CPU" ((/ 16) <$> eCores e) (maybe "" (\x -> fmtFixed 1 x <> " cores") (eCores e))
     meterRow "Mem" Nothing (maybe "" (fmtBytes . fromIntegral) (eRss e))
-  elClass "div" "muted oneline" $ forM_ (eLastEval e) $ \i -> do
-    text "previous: "
-    elAttr "a" ("href" =: ("#/eval/" <> showT i)) (text ("eval " <> showT i))
-    -- How long it took, and the usual time when that differs, so the
-    -- running time above has something to be compared with.
-    forM_ (eLastEvalSeconds e) $ \s -> text (" took " <> fmtDuration (fromIntegral s))
-    forM_ (eTypicalSeconds e) $ \s -> when (Just s /= eLastEvalSeconds e) $
-      text (" · usually " <> fmtDuration (fromIntegral s))
+  elClass "div" "muted oneline" $ do
+    forM_ (eJobsFailed e) $ \f -> when (f > 0) $ elClass "span" "bad" (text (showT f <> " failed to evaluate · "))
+    forM_ (eLastEval e) $ \i -> do
+      text (maybe "previous: " (\g -> "first evaluation; " <> g <> "'s: ") (eGuideJobset e))
+      elAttr "a" ("href" =: ("#/eval/" <> showT i)) (text ("eval " <> showT i))
+      -- How long it took, and the usual time when that differs, so the
+      -- running time above has something to be compared with.
+      forM_ (eLastEvalSeconds e) $ \s -> text (" took " <> fmtDuration (fromIntegral s))
+      forM_ (eTypicalSeconds e) $ \s -> when (Just s /= eLastEvalSeconds e) $
+        text (" · usually " <> fmtDuration (fromIntegral s))
 
 -- | The evaluator's queue, in the order it will start the evaluations.
 pendingCard :: W t m => Dynamic t UTCTime -> [EvalNow] -> Int -> [PendingEval] -> m ()

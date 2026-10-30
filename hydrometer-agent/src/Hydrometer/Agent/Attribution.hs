@@ -73,9 +73,12 @@ isNixDaemon p = pComm p == "nix-daemon" || "/bin/nix-daemon" `T.isSuffixOf` pPat
 
 -- | hydra-eval-jobset is a perl script; on linux its comm is truncated to 15
 -- characters and may carry the nix wrapper's leading dot.
+-- | hydra-eval-jobset.  Linux keeps 15 characters of a process's name, so
+-- the copy makeWrapper renames it to (.hydra-eval-jobset-wrapped) shows as
+-- @.hydra-eval-job@.
 isEvalRoot :: Proc -> Bool
-isEvalRoot p = any (`T.isPrefixOf` T.dropWhile (== '.') (pComm p)) ["hydra-eval-jobs"]
-  && not ("hydra-eval-jobs-" `T.isPrefixOf` pComm p)
+isEvalRoot p = "hydra-eval-job" `T.isPrefixOf` c && not ("hydra-eval-jobs-" `T.isPrefixOf` c)
+  where c = T.dropWhile (== '.') (pComm p)
 
 -- | Group a process table.  @isBuildUid@ says whether a uid is a nix build
 -- user.

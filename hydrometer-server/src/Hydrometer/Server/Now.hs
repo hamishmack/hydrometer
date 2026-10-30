@@ -19,6 +19,7 @@ import Database.PostgreSQL.Simple (Connection)
 import Hydrometer.Api
 import Hydrometer.Server.Blockers (BlockerEnv, waitingAlerts)
 import Hydrometer.Server.Db (epochMs)
+import Hydrometer.Server.EvalProgress (EvalProgress (..), evalProgress)
 import Hydrometer.Server.Logs (recentLogPatterns)
 import Hydrometer.Server.Ingest (AgentState (..))
 import Hydrometer.Server.GcLock (GcHolder (..), gcLockHolders)
@@ -45,6 +46,7 @@ buildNow c agentsVar queueVar benv cacheVar evalSlots = do
   steps <- busySteps c
   prefetched <- S.fromList <$> prefetchedSteps c
   evals <- runningEvals c
+  progress <- mapM (\(p, j, st, _, _, _, _, _) -> maybe (pure Nothing) (evalProgress (p <> ":" <> j)) st) evals
   pending <- pendingEvals c
   cache <- readTVarIO cacheVar
   logs <- recentLogPatterns c
@@ -64,8 +66,11 @@ buildNow c agentsVar queueVar benv cacheVar evalSlots = do
             { eProject = p, eJobset = j, eStarted = st
             , eCores = (\(_, r, h) -> fromIntegral (rCpuMs r) / fromIntegral (max 1 (hIntervalMs h))) <$> er
             , eRss = (\(_, r, _) -> rFootprint r) <$> er
-            , eLastEval = prev, eLastEvalSeconds = prevS, eTypicalSeconds = typ }
-        | (p, j, st, prev, prevS, typ) <- evals
+            , eLastEval = prev, eLastEvalSeconds = prevS, eTypicalSeconds = typ
+            , eGuideJobset = guide, eGuideJobs = guideJobs
+            , ePhase = epPhase <$> pr, eJobsEvaluated = epJobs =<< pr
+            , eJobsFailed = epFailed =<< pr, eJobsChecked = epChecked =<< pr }
+        | ((p, j, st, prev, prevS, typ, guide, guideJobs), pr) <- zip evals progress
         , let er = listToMaybe [ x | x@(n, _, _) <- evalRuns, n == p <> ":" <> j ] ]
       pendingNow =
         [ PendingEval { peProject = p, peJobset = j, peRequested = rq, peLastChecked = lc

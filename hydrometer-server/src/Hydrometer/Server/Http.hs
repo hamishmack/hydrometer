@@ -115,8 +115,8 @@ app env req respond = do
           running <- runningEvals c
           pure (A.object
             [ "evals" .= t
-            , "running" .= [ A.object ["project" .= p, "jobset" .= j, "started" .= s, "previousEval" .= e, "previousEvalSeconds" .= es, "typicalSeconds" .= typ]
-                           | (p, j, s, e, es, typ) <- running ] ])) >>= ok
+            , "running" .= [ A.object ["project" .= p, "jobset" .= j, "started" .= s, "previousEval" .= e, "previousEvalSeconds" .= es, "typicalSeconds" .= typ, "guideJobset" .= g, "guideJobs" .= gj]
+                           | (p, j, s, e, es, typ, g, gj) <- running ] ])) >>= ok
       ["api", "eval", i] | Just eid <- readMaybe (T.unpack i) -> withConn db (\c -> do
           s <- evalSummary c eid
           tl <- evalTimeline c eid

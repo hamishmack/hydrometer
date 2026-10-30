@@ -181,6 +181,22 @@ data EvalNow = EvalNow
     -- ^ How long that evaluation took (checkout + eval).
   , eTypicalSeconds :: !(Maybe Int)
     -- ^ Median duration of the jobset's last five evaluations.
+  , eGuideJobset :: !(Maybe Text)
+    -- ^ Set when the jobset has never been evaluated: the jobset (the
+    -- project's @master@) the three fields above and 'eGuideJobs' describe.
+  , eGuideJobs :: !(Maybe Int)
+    -- ^ Builds in the latest of those evaluations that had any, a guide to
+    -- how many jobs this one will have.
+  , ePhase :: !(Maybe Text)
+    -- ^ @fetching@, @evaluating@ or @adding@ (adding the builds to hydra's
+    -- database), from hydra-eval-jobset's log.
+  , eJobsEvaluated :: !(Maybe Int)
+    -- ^ Jobs evaluated so far.  None is built, or even in the database,
+    -- until the evaluation finishes.
+  , eJobsFailed :: !(Maybe Int)
+    -- ^ Of those, how many failed to evaluate.
+  , eJobsChecked :: !(Maybe Int)
+    -- ^ While adding: jobs checked against existing builds so far.
   } deriving stock (Show, Eq, Generic)
 
 instance ToJSON EvalNow where toJSON = genericToJSON apiOptions
