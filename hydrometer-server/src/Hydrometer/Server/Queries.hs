@@ -186,8 +186,9 @@ recentEvals c limit = queryTable c
   "WITH e AS (SELECT id FROM jobsetevals ORDER BY id DESC LIMIT ?) \
   \SELECT p.eval_id, p.project, p.jobset, (extract(epoch FROM p.evaluated) * 1000)::bigint AS evaluated, \
   \  p.eval_s, p.builds, p.finished, p.succeeded, p.failed, p.queued, \
-  \  (extract(epoch FROM p.last_finish) * 1000)::bigint AS last_finish \
-  \FROM hydrometer.v_eval_progress p WHERE p.eval_id IN (SELECT id FROM e) ORDER BY p.eval_id DESC"
+  \  (extract(epoch FROM p.last_finish) * 1000)::bigint AS last_finish, je.flake \
+  \FROM hydrometer.v_eval_progress p JOIN jobsetevals je ON je.id = p.eval_id \
+  \WHERE p.eval_id IN (SELECT id FROM e) ORDER BY p.eval_id DESC"
   (Only limit)
 
 evalSummary :: Connection -> Int -> IO Table
@@ -339,13 +340,14 @@ typicalEvalSecondsOf alias =
 -- | Running evaluations, with their jobset's previous evaluation, or when
 -- there is none (a new pull request), the project's master's, as a guide
 -- to how long they take and how many jobs they have.
-runningEvals :: Connection -> IO [(Text, Text, Maybe Int64, Maybe Int, Maybe Int, Maybe Int, Maybe Text, Maybe Int)]
+runningEvals :: Connection -> IO [(Text, Text, Maybe Int64, Maybe Int, Maybe Int, Maybe Int, Maybe Text, Maybe Int, Maybe Text)]
 runningEvals c = query_ c $
   "SELECT j.project, j.name, j.starttime::bigint * 1000, \
   \  e.id, e.checkouttime + e.evaltime, " <> typicalEvalSecondsOf "g" <> ", \
   \  CASE WHEN g.id <> j.id THEN g.name END, \
   \  (SELECT nrbuilds FROM jobsetevals WHERE jobset_id = g.id AND hasnewbuilds = 1 \
-  \   ORDER BY id DESC LIMIT 1) \
+  \   ORDER BY id DESC LIMIT 1), \
+  \  j.flake \
   \FROM jobsets j \
   \LEFT JOIN LATERAL (SELECT gj.id, gj.name FROM jobsets gj \
   \  WHERE gj.project = j.project AND (gj.id = j.id OR gj.name = 'master') \

@@ -104,14 +104,16 @@ cpuGauge frac v sub = elAttr "div" ("class" =: "stat gauge" <> "title" =: ("CPU 
 -- | A finished evaluation, from @api/evals@.
 data PastEval = PastEval
   { pId :: Int, pProject :: Text, pJobset :: Text, pEvaluated :: Int64
-  , pEvalS :: Maybe Double, pBuilds :: Int, pFinished :: Int, pFailed :: Int, pQueued :: Int }
+  , pEvalS :: Maybe Double, pBuilds :: Int, pFinished :: Int, pSucceeded :: Int, pFailed :: Int, pQueued :: Int
+  , pFlake :: Text }
   deriving stock Eq
 
 pastEvals :: Table -> [PastEval]
 pastEvals (Table cols rows) =
   [ PastEval { pId = i, pProject = str "project", pJobset = str "jobset", pEvaluated = int "evaluated"
              , pEvalS = num "eval_s", pBuilds = int "builds", pFinished = int "finished"
-             , pFailed = int "failed", pQueued = int "queued" }
+             , pSucceeded = int "succeeded", pFailed = int "failed", pQueued = int "queued"
+             , pFlake = str "flake" }
   | r <- rows
   , let get c = M.lookup c (M.fromList (zip cols r))
         num c = case get c of Just (A.Number n) -> Just (toRealFloat n :: Double); _ -> Nothing
@@ -162,10 +164,18 @@ pastCard clock pD = elClass "div" "card" $ dyn_ $ ffor pD $ \p -> do
       elAttr "a" ("href" =: ("#/eval/" <> showT (pId p))) (text (pProject p <> ":" <> pJobset p))
     elClass "span" "sub" $ dynText (ffor clock (\c -> fmtAgo c (pEvaluated p) <> " ago"))
   elClass "div" "meters" $ do
-    progressRow "Built" (if pBuilds p > 0 then Just (fromIntegral (pFinished p) / fromIntegral (pBuilds p)) else Nothing) (pFailed p > 0)
-      (showT (pFinished p) <> " / " <> showT (pBuilds p))
+    -- One bar: succeeded in green, failed in red, the rest still to build.
+    elClass "span" "label" (text "Built")
+    let part n = showT (if pBuilds p > 0 then fromIntegral n * 100 / fromIntegral (pBuilds p) else 0 :: Double) <> "%"
+    elAttr "div" ("class" =: "bar split" <> "title" =: (showT (pSucceeded p) <> " succeeded, " <> showT (pFailed p) <> " failed, "
+                                                          <> showT (pQueued p) <> " queued")) $ do
+      elAttr "div" ("class" =: "ok" <> "style" =: ("width:" <> part (pSucceeded p))) blank
+      elAttr "div" ("class" =: "bad" <> "style" =: ("width:" <> part (pFailed p))) blank
+    elClass "span" "val" (text (showT (pFinished p) <> " / " <> showT (pBuilds p)))
   elClass "div" "muted oneline" $ do
     elAttr "a" ("href" =: ("#/eval/" <> showT (pId p))) (text ("eval " <> showT (pId p)))
+    hydraEvalLink (pId p)
+    githubLink (pFlake p)
     text $ T.concat
       [ maybe "" (\s -> " · took " <> fmtDuration s) (pEvalS p)
       , if pFailed p > 0 then " · " <> showT (pFailed p) <> " failed" else ""
@@ -208,6 +218,7 @@ runningCard clock eD = elClass "div" "card running" $ dyn_ $ ffor eD $ \e -> do
     meterRow "CPU" ((/ 16) <$> eCores e) (maybe "" (\x -> fmtFixed 1 x <> " cores") (eCores e))
     meterRow "Mem" Nothing (maybe "" (fmtBytes . fromIntegral) (eRss e))
   elClass "div" "muted oneline" $ do
+    forM_ (eFlake e) $ \f -> githubLink f >> text " "
     forM_ (eJobsFailed e) $ \f -> when (f > 0) $ elClass "span" "bad" (text (showT f <> " failed to evaluate · "))
     forM_ (eLastEval e) $ \i -> do
       text (maybe "previous: " (\g -> "first evaluation; " <> g <> "'s: ") (eGuideJobset e))
@@ -217,6 +228,20 @@ runningCard clock eD = elClass "div" "card running" $ dyn_ $ ffor eD $ \e -> do
       forM_ (eLastEvalSeconds e) $ \s -> text (" took " <> fmtDuration (fromIntegral s))
       forM_ (eTypicalSeconds e) $ \s -> when (Just s /= eLastEvalSeconds e) $
         text (" · usually " <> fmtDuration (fromIntegral s))
+
+-- | An icon linking to Hydra's page for an evaluation (hydrometer is
+-- served from Hydra's host).
+hydraEvalLink :: DomBuilder t m => Int -> m ()
+hydraEvalLink i = elAttr "a" ("class" =: "icon hydra" <> "href" =: ("/eval/" <> showT i)
+                              <> "title" =: ("eval " <> showT i <> " on Hydra")) blank
+
+-- | An icon linking to the commit a @github:owner/repo/rev@ flake names.
+githubLink :: DomBuilder t m => Text -> m ()
+githubLink flake = case T.splitOn "/" (T.takeWhile (/= '?') flake) of
+  [o, repo, rev] | Just owner <- T.stripPrefix "github:" o, T.length rev == 40 ->
+    elAttr "a" ("class" =: "icon github" <> "href" =: ("https://github.com/" <> owner <> "/" <> repo <> "/commit/" <> rev)
+                <> "title" =: (owner <> "/" <> repo <> "@" <> T.take 7 rev <> " on GitHub")) blank
+  _ -> blank
 
 -- | The evaluator's queue, in the order it will start the evaluations.
 pendingCard :: W t m => Dynamic t UTCTime -> [EvalNow] -> Int -> [PendingEval] -> m ()
@@ -260,14 +285,6 @@ pendingCard clock running slots ps = do
         replaceAt i v xs = [ if j == i then v else x | (j, x) <- zip [0 ..] xs ]
 
 -- | Progress, not load: green when complete, red once anything failed.
-progressRow :: DomBuilder t m => Text -> Maybe Double -> Bool -> Text -> m ()
-progressRow label frac failed val = do
-  elClass "span" "label" (text label)
-  let f = maybe 0 (max 0 . min 1) frac
-      cls = if failed then "bar bad" else if f >= 1 then "bar done" else "bar"
-  elClass "div" cls $ elAttr "div" ("style" =: ("width:" <> showT (round (f * 100) :: Int) <> "%")) blank
-  elClass "span" "val" (text val)
-
 meterRow :: DomBuilder t m => Text -> Maybe Double -> Text -> m ()
 meterRow label frac val = do
   elClass "span" "label" (text label)

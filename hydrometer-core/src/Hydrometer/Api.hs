@@ -197,6 +197,8 @@ data EvalNow = EvalNow
     -- ^ Of those, how many failed to evaluate.
   , eJobsChecked :: !(Maybe Int)
     -- ^ While adding: jobs checked against existing builds so far.
+  , eFlake :: !(Maybe Text)
+    -- ^ The flake being evaluated, e.g. @github:owner/repo/rev@.
   } deriving stock (Show, Eq, Generic)
 
 instance ToJSON EvalNow where toJSON = genericToJSON apiOptions
