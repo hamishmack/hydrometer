@@ -439,25 +439,23 @@ jobsPage = do
 bottlenecksPage :: forall t m. W t m => m ()
 bottlenecksPage = do
   el "h2" (text "What limits the farm")
-  elClass "p" "muted" (text "Each machine-minute is classified by what limited it: cpu (≥85% of cores busy), memory (pressure or paging), network, slots (every build slot busy without saturating the hardware: more slots or bigger VMs would help), scheduler (free slots while work for the machine's systems is runnable: the queue runner is not dispatching), starved (free slots, nothing runnable: waiting on dependencies elsewhere), idle The line is the memory in use across the machines (right axis).")
+  elClass "p" "muted" (text "Each machine-minute is classified by what limited it: cpu (≥85% of cores busy), memory (pressure or paging), network, slots (every build slot busy without saturating the hardware: more slots or bigger VMs would help), scheduler (free slots while work for the machine's systems is runnable: the queue runner is not dispatching), starved (free slots, nothing runnable: waiting on dependencies elsewhere), idle.")
   hoursD <- rangeSelector 24
   bD <- fetchDyn (Just 60) ((\h -> "api/bottlenecks?" <> rangeQuery h) <$> hoursD) :: m (Dynamic t (Maybe A.Value))
   farmD <- fetchDyn (Just 60) ((\h -> "api/farm?" <> rangeQuery h) <$> hoursD) :: m (Dynamic t (Maybe Series))
   let series = (>>= A.parseMaybe (A.withObject "b" (A..: "series"))) <$> bD :: Dynamic t (Maybe Series)
       summary = (>>= A.parseMaybe (A.withObject "b" (A..: "summary"))) <$> bD :: Dynamic t (Maybe Table)
   chartWidget "chart tall" "line" $ ffor series $ fmap $ \s -> (s, A.object
-    [ "cols" .= (["cpu", "memory", "network", "slots", "scheduler", "starved", "idle", "disabled", "mem_used"] :: [Text])
-    , "stack" .= True, "unit" .= ("" :: Text)
-      -- Memory in use across the agents' machines, on its own axis and not
-      -- stacked with the machine-minutes.
-    , "axes" .= A.object ["mem_used" .= (1 :: Int)], "unit2" .= ("pct" :: Text)
-    , "labels" .= A.object ["mem_used" .= ("memory used (all machines)" :: Text)] ])
+    [ "cols" .= (["cpu", "memory", "network", "slots", "scheduler", "starved", "idle", "disabled"] :: [Text])
+    , "stack" .= True, "unit" .= ("" :: Text) ])
   el "h3" (text "Farm")
   chartWidget "chart" "line" $ ffor farmD $ fmap $ \s -> (s, A.object
-    [ "cols" .= (["cpu_util", "runs", "runnable_linux", "runnable_darwin"] :: [Text])
+    -- Memory in use beside CPU, on the same percentage axis.
+    [ "cols" .= (["cpu_util", "mem_used", "runs", "runnable_linux", "runnable_darwin"] :: [Text])
     , "axes" .= A.object ["runs" .= (1 :: Int), "runnable_linux" .= (1 :: Int), "runnable_darwin" .= (1 :: Int)]
     , "unit" .= ("pct" :: Text), "unit2" .= ("" :: Text)
-    , "labels" .= A.object ["cpu_util" .= ("CPU (all machines)" :: Text), "runs" .= ("builds running" :: Text)] ])
+    , "labels" .= A.object [ "cpu_util" .= ("CPU (all machines)" :: Text), "mem_used" .= ("memory used (all machines)" :: Text)
+                           , "runs" .= ("builds running" :: Text)] ])
   el "h3" (text "Minutes per machine")
   tableWidget [] summary
 

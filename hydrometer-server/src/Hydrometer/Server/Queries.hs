@@ -134,15 +134,11 @@ bottleneckSeries c tr@(TimeRange f t) = do
     \    count(*) FILTER (WHERE bottleneck = 'idle') AS idle, \
     \    count(*) FILTER (WHERE bottleneck = 'disabled') AS disabled \
     \  FROM hydrometer.bottleneck_minutes(?, ?) GROUP BY 1 \
-    \), m AS ( \
-    \  SELECT date_bin(make_interval(secs => ?), t, '2000-01-01') AS t, \
-    \    sum(mem_used_max)::float8 / nullif(sum(mem_total), 0) AS mem_used \
-    \  FROM hydrometer.host_minute WHERE t >= ? AND t < ? GROUP BY 1 \
     \) \
     \SELECT (extract(epoch FROM b.t) * 1000)::bigint AS t, b.cpu, b.memory, b.network, b.slots, \
-    \  b.scheduler, b.starved, b.idle, b.disabled, m.mem_used \
-    \FROM b LEFT JOIN m ON m.t = b.t ORDER BY 1"
-    (b, f, t, b, f, t)
+    \  b.scheduler, b.starved, b.idle, b.disabled \
+    \FROM b ORDER BY 1"
+    (b, f, t)
   pure (tableToSeries (b * 1000) tbl)
 
 bottleneckSummary :: Connection -> TimeRange -> IO Table
@@ -167,6 +163,7 @@ farmSeries c tr@(TimeRange f t) = do
     "WITH h AS ( \
     \  SELECT date_bin(make_interval(secs => ?), t, '2000-01-01') AS t, \
     \    sum(cpu_busy_ms)::float8 / nullif(sum(cpu_total_ms), 0) AS cpu_util, \
+    \    sum(mem_used_max)::float8 / nullif(sum(mem_total), 0) AS mem_used, \
     \    sum(net_rx_bytes)::float8 / ? AS net_rx_rate, sum(runs_max) / greatest(count(DISTINCT t), 1)::float8 AS runs \
     \  FROM hydrometer.host_minute WHERE t >= ? AND t < ? GROUP BY 1 \
     \), q AS ( \
@@ -175,7 +172,7 @@ farmSeries c tr@(TimeRange f t) = do
     \    avg(runnable) FILTER (WHERE system LIKE '%-darwin') * count(DISTINCT system) FILTER (WHERE system LIKE '%-darwin') AS runnable_darwin \
     \  FROM hydrometer.queue_samples WHERE t >= ? AND t < ? GROUP BY 1 \
     \) \
-    \SELECT (extract(epoch FROM coalesce(h.t, q.t)) * 1000)::bigint AS t, h.cpu_util, h.net_rx_rate, h.runs, \
+    \SELECT (extract(epoch FROM coalesce(h.t, q.t)) * 1000)::bigint AS t, h.cpu_util, h.mem_used, h.net_rx_rate, h.runs, \
     \  q.runnable_linux, q.runnable_darwin \
     \FROM h FULL JOIN q ON q.t = h.t ORDER BY 1"
     (b, b, f, t, b, f, t)
