@@ -127,7 +127,8 @@ table.data tr:hover td { background: rgba(127,127,127,.06); }
 /* Evaluation cards: one build bar, succeeded then failed. */
 .bar.split { display: flex; }
 .bar.split > .ok { background: var(--ok); }
-.bar.split > .bad { background: var(--bad); }
+.bar.split > .ok.warn { background: var(--warn); }
+.bar.split > .bad { background: var(--bad); min-width: 2px; flex-shrink: 0; }
 /* Small link icons (GitHub's mark and an external-link arrow, from
    Primer Octicons, MIT), drawn in the text colour. */
 a.icon { display: inline-block; width: 12px; height: 12px; margin-left: 5px; vertical-align: -1px;

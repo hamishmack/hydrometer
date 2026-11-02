@@ -165,12 +165,15 @@ pastCard clock pD = elClass "div" "card" $ dyn_ $ ffor pD $ \p -> do
     elClass "span" "sub" $ dynText (ffor clock (\c -> fmtAgo c (pEvaluated p) <> " ago"))
   elClass "div" "meters" $ do
     -- One bar: succeeded in green, failed in red, the rest still to build.
+    -- A few failures among thousands of builds would be a sliver, so any
+    -- failure turns the succeeded part orange and the red part is at least
+    -- 2px wide.
     elClass "span" "label" (text "Built")
     let part n = showT (if pBuilds p > 0 then fromIntegral n * 100 / fromIntegral (pBuilds p) else 0 :: Double) <> "%"
     elAttr "div" ("class" =: "bar split" <> "title" =: (showT (pSucceeded p) <> " succeeded, " <> showT (pFailed p) <> " failed, "
                                                           <> showT (pQueued p) <> " queued")) $ do
-      elAttr "div" ("class" =: "ok" <> "style" =: ("width:" <> part (pSucceeded p))) blank
-      elAttr "div" ("class" =: "bad" <> "style" =: ("width:" <> part (pFailed p))) blank
+      elAttr "div" ("class" =: (if pFailed p > 0 then "ok warn" else "ok") <> "style" =: ("width:" <> part (pSucceeded p))) blank
+      when (pFailed p > 0) $ elAttr "div" ("class" =: "bad" <> "style" =: ("width:" <> part (pFailed p))) blank
     elClass "span" "val" (text (showT (pFinished p) <> " / " <> showT (pBuilds p)))
   elClass "div" "muted oneline" $ do
     elAttr "a" ("href" =: ("#/eval/" <> showT (pId p))) (text ("eval " <> showT (pId p)))
