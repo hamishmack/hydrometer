@@ -216,6 +216,7 @@ hostDelta interval a b = HostStats
   , hMaxFiles = hrMaxFiles b
   , hFreeVnodes = hrFreeVnodes b
   , hMaxVnodes = hrMaxVnodes b
+  , hDeadVnodes = hrDeadVnodes b
   , hStoreFree = hrStoreFree b
   , hStoreTotal = hrStoreTotal b
   }

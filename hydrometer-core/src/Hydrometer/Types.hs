@@ -120,9 +120,14 @@ data HostStats = HostStats
   , hOpenFiles    :: !(Maybe Int64)
   , hMaxFiles     :: !(Maybe Int64)
   , hFreeVnodes   :: !(Maybe Int64)
-    -- ^ kern.free_vnodes (macOS).  None free: opening a file fails with ENFILE.
+    -- ^ kern.free_vnodes (macOS).  Low most of the time: macOS never
+    -- shrinks its vnode table, and this does not count dead vnodes.
   , hMaxVnodes    :: !(Maybe Int64)
     -- ^ kern.maxvnodes (macOS).
+  , hDeadVnodes   :: !(Maybe Int64)
+    -- ^ vfs.vnstats.num_dead_vnodes (macOS): vnodes the kernel reuses
+    -- before anything else.  Free plus dead is what is available; with
+    -- none, opening a file fails with ENFILE.
   , hStoreFree    :: !(Maybe Int64)
   , hStoreTotal   :: !(Maybe Int64)
   } deriving stock (Show, Eq, Generic)

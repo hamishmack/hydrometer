@@ -366,9 +366,12 @@ machineCard clock openB m = elClass "div" "card" $ do
       meterRow "Disk w" ((/ 2e9) <$> mDiskWriteRate m) (maybe "–" fmtRate (mDiskWriteRate m))
       let fd = (\o x -> fromIntegral o / fromIntegral x) <$> mOpenFiles m <*> mMaxFiles m
       meterRow "Files" fd (maybe "–" showT (mOpenFiles m))
-      -- Vnodes in use (macOS).  With none free, opening a file fails with ENFILE.
-      forM_ ((,) <$> mFreeVnodes m <*> mMaxVnodes m) $ \(f, x) -> when (x > 0) $
-        meterRow "Vnodes" (Just (fromIntegral (x - f) / fromIntegral x)) (showT f <> " free")
+      -- Vnodes in use (macOS): all but the free and the dead, which the
+      -- kernel reuses first.  With none available, opening a file fails
+      -- with ENFILE.
+      forM_ ((,) <$> mFreeVnodes m <*> mMaxVnodes m) $ \(f, x) -> when (x > 0) $ do
+        let a = f + fromMaybe 0 (mDeadVnodes m)
+        meterRow "Vnodes" (Just (fromIntegral (x - a) / fromIntegral x)) (showT a <> " avail")
     when (not (null (mCpuHistory m))) $
       chartWidget "spark" "spark" (constDyn (Just (mCpuHistory m, A.object [])))
     -- Always present, so the card does not jump as other work comes and goes.

@@ -106,6 +106,8 @@ data MachineNow = MachineNow
   , mMaxFiles    :: !(Maybe Int64)
   , mFreeVnodes  :: !(Maybe Int64)
   , mMaxVnodes   :: !(Maybe Int64)
+  , mDeadVnodes  :: !(Maybe Int64)
+    -- ^ See 'hDeadVnodes': free plus dead is what is available.
   , mStoreFree   :: !(Maybe Int64)
   , mStoreTotal  :: !(Maybe Int64)
   , mSystems     :: ![Text]

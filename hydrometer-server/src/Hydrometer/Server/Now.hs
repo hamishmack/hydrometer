@@ -34,6 +34,10 @@ cpuUtil h =
       total = busy + hCpuIdleMs h
   in if total <= 0 then Nothing else Just (fromIntegral busy / fromIntegral total)
 
+-- | Vnodes the kernel can hand out: free plus dead (see 'hDeadVnodes').
+availableVnodes :: MachineNow -> Maybe Int64
+availableVnodes m = (+ fromMaybe 0 (mDeadVnodes m)) <$> mFreeVnodes m
+
 perSecond :: HostStats -> Int64 -> Maybe Double
 perSecond h v = if hIntervalMs h <= 0 then Nothing else Just (fromIntegral v * 1000 / fromIntegral (hIntervalMs h))
 
@@ -127,15 +131,18 @@ buildNow c agentsVar queueVar benv cacheVar evalSlots = do
            | (n, a) <- M.toList agents, Just e <- [asError a] ]
         ++ [ Alert "warning" (mName m <> " is using " <> pct o mx <> " of its file descriptors (kern.maxfiles)")
            | m <- machines, Just o <- [mOpenFiles m], Just mx <- [mMaxFiles m], mx > 0, fromIntegral o > (0.8 :: Double) * fromIntegral mx ]
-        -- Every open file needs a vnode; with none free, opening any file
-        -- fails with ENFILE ("Too many open files in system"), however high
-        -- kern.maxfiles is.  Long linux VM builds hold one per inode their
-        -- guest has cached (2026-10-28: evals 3091 and 3093 lost dozens of
-        -- GHC steps on the M4s to it).
+        -- Every open file needs a vnode; when the kernel has none to reuse,
+        -- opening any file fails with ENFILE ("Too many open files in
+        -- system"), however high kern.maxfiles is.  Long linux VM builds
+        -- hold one per inode their guest has cached (2026-10-28: evals 3091
+        -- and 3093 lost dozens of GHC steps on the M4s to it).  Available
+        -- is free plus dead: macOS never shrinks its vnode table, so
+        -- kern.free_vnodes alone is always low (2026-11-03: about 2% on
+        -- every M4, with 95% of the table dead and reusable).
         ++ [ Alert (if fromIntegral f < (0.1 :: Double) * fromIntegral mx then "critical" else "warning")
-              (mName m <> " has only " <> T.pack (show f) <> " of " <> T.pack (show mx) <> " vnodes free ("
-                <> pct f mx <> "): when none is free, every build on it fails with ENFILE (\"Too many open files in system\").")
-           | m <- machines, Just f <- [mFreeVnodes m], Just mx <- [mMaxVnodes m], mx > 0
+              (mName m <> " has only " <> T.pack (show f) <> " of " <> T.pack (show mx) <> " vnodes available ("
+                <> pct f mx <> ", free or dead): when none is, every build on it fails with ENFILE (\"Too many open files in system\").")
+           | m <- machines, Just f <- [availableVnodes m], Just mx <- [mMaxVnodes m], mx > 0
            , fromIntegral f < (0.2 :: Double) * fromIntegral mx ]
         ++ [ Alert "warning" (mName m <> " has only " <> pct f t <> " of its nix store disk free")
            | m <- machines, Just f <- [mStoreFree m], Just t <- [mStoreTotal m], t > 0, fromIntegral f < (0.1 :: Double) * fromIntegral t ]
@@ -173,6 +180,7 @@ machineNow agents qrByName isOrphan isUploading prefetched runSteps stepsByMachi
   , mMaxFiles = host >>= hMaxFiles
   , mFreeVnodes = host >>= hFreeVnodes
   , mMaxVnodes = host >>= hMaxVnodes
+  , mDeadVnodes = host >>= hDeadVnodes
   , mStoreFree = host >>= hStoreFree
   , mStoreTotal = host >>= hStoreTotal
   , mSystems = systems
