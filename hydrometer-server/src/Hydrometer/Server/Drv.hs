@@ -1,5 +1,5 @@
--- | Just enough of a .drv file: its input derivations, system and required
--- system features.  The server runs on the hydra host, so the derivations
+-- | Just enough of a .drv file: its outputs, input derivations, system and
+-- required system features.  The server runs on the hydra host, so the derivations
 -- hydra is building are in its store.
 module Hydrometer.Server.Drv
   ( DrvInfo (..)
@@ -22,7 +22,10 @@ import Data.Text.Encoding qualified as T
 import Data.Text.Encoding.Error qualified as T
 
 data DrvInfo = DrvInfo
-  { dInputs   :: ![Text]
+  { dOutputs  :: ![Text]
+    -- ^ Output paths (empty for content-addressed outputs, whose paths are
+    -- not known until they are built).
+  , dInputs   :: ![Text]
     -- ^ Full store paths of the input derivations.
   , dSystem   :: !Text
   , dFeatures :: ![Text]
@@ -52,10 +55,11 @@ parseDrv bs0 = do
     Tuple fs -> Just fs
     _ -> Nothing
   case fields of
-    [_outputs, List inputDrvs, _srcs, Str system, _builder, _args, List env] ->
+    [List outputs, List inputDrvs, _srcs, Str system, _builder, _args, List env] ->
       let envPairs = [ (k, v) | Tuple [Str k, Str v] <- env ]
       in Just DrvInfo
-        { dInputs = [ p | Tuple (Str p : _) <- inputDrvs ]
+        { dOutputs = [ p | Tuple (Str _ : Str p : _) <- outputs, not (T.null p) ]
+        , dInputs = [ p | Tuple (Str p : _) <- inputDrvs ]
         , dSystem = system
         , dFeatures = features envPairs }
     _ -> Nothing

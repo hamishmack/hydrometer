@@ -1,7 +1,7 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 -- | Entry point and hash routing (@#/now@, @#/machine/NAME@, @#/jobs@,
--- @#/bottlenecks@, @#/evals@, @#/eval/ID@, @#/build/ID@).
+-- @#/bottlenecks@, @#/evals@, @#/eval/ID@, @#/ifd/RUN@, @#/build/ID@).
 --
 -- Compiled with the GHC JavaScript backend this runs in the page.  Built
 -- natively it is a jsaddle-warp development server: open
@@ -27,7 +27,7 @@ import Hydrometer.UI.Common
 import Hydrometer.UI.Pages
 
 data Route
-  = RNow | RMachine Text | RJobs | RBottlenecks | REvals | REval Int | RBuild Int
+  = RNow | RMachine Text | RJobs | RBottlenecks | REvals | REval Int | RIfd Int | RBuild Int
   deriving (Eq, Show)
 
 parseRoute :: Text -> Route
@@ -37,6 +37,7 @@ parseRoute h = case filter (not . T.null) (T.splitOn "/" (T.dropWhile (`elem` ['
   ["bottlenecks"] -> RBottlenecks
   ["evals"] -> REvals
   ["eval", i] | Just n <- readMaybe (T.unpack i) -> REval n
+  ["ifd", i] | Just n <- readMaybe (T.unpack i) -> RIfd n
   ["build", i] | Just n <- readMaybe (T.unpack i) -> RBuild n
   _ -> RNow
 
@@ -69,7 +70,7 @@ app = do
     el "nav" $ mapM_ (navLink routeD)
       [ ("#/now", "Now", (== RNow)), ("#/jobs", "Jobs", (== RJobs))
       , ("#/bottlenecks", "Bottlenecks", (== RBottlenecks))
-      , ("#/evals", "Evaluations", \case REvals -> True; REval _ -> True; _ -> False) ]
+      , ("#/evals", "Evaluations", \case REvals -> True; REval _ -> True; RIfd _ -> True; _ -> False) ]
     elClass "span" "clock" $ elAttr "a" ("href" =: "api") (text "JSON API")
   routeU <- holdUniqDyn routeD
   el "main" $ dyn_ $ ffor routeU $ \case
@@ -79,6 +80,7 @@ app = do
     RBottlenecks -> bottlenecksPage
     REvals -> evalsPage
     REval i -> evalPage i
+    RIfd r -> ifdPage r
     RBuild b -> buildPage b
   where
     navLink routeD (href, label, active) =

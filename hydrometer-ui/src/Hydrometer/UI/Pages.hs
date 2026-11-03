@@ -7,6 +7,7 @@ module Hydrometer.UI.Pages
   , bottlenecksPage
   , evalsPage
   , evalPage
+  , ifdPage
   , buildPage
   ) where
 
@@ -15,9 +16,9 @@ import Data.Aeson ((.=))
 import Data.Aeson qualified as A
 import Data.Aeson.Types qualified as A
 import Data.Map.Strict qualified as M
-import Data.List (partition)
+import Data.List (partition, sortOn)
 import Data.Int (Int64)
-import Data.Maybe (fromMaybe, isJust)
+import Data.Maybe (fromMaybe, isJust, isNothing)
 import Data.Ord (Down (..))
 import Data.Scientific (toRealFloat)
 import Data.Set qualified as S
@@ -220,6 +221,7 @@ runningCard clock eD = elClass "div" "card running" $ dyn_ $ ffor eD $ \e -> do
       _ -> blank
     meterRow "CPU" ((/ 16) <$> eCores e) (maybe "" (\x -> fmtFixed 1 x <> " cores") (eCores e))
     meterRow "Mem" Nothing (maybe "" (fmtBytes . fromIntegral) (eRss e))
+  forM_ (eIfd e) (ifdCard clock)
   elClass "div" "muted oneline" $ do
     forM_ (eFlake e) $ \f -> githubLink f >> text " "
     forM_ (eJobsFailed e) $ \f -> when (f > 0) $ elClass "span" "bad" (text (showT f <> " failed to evaluate · "))
@@ -231,6 +233,52 @@ runningCard clock eD = elClass "div" "card running" $ dyn_ $ ffor eD $ \e -> do
       forM_ (eLastEvalSeconds e) $ \s -> text (" took " <> fmtDuration (fromIntegral s))
       forM_ (eTypicalSeconds e) $ \s -> when (Just s /= eLastEvalSeconds e) $
         text (" · usually " <> fmtDuration (fromIntegral s))
+
+-- | A running evaluation's nix-eval-jobs workers and the import-from-
+-- derivation builds they are blocked on.  A worker blocked on an IFD
+-- evaluates nothing else, so when most of them wait on one build, that
+-- build is the evaluation's critical path.
+ifdCard :: W t m => Dynamic t UTCTime -> IfdNow -> m ()
+ifdCard clock i = elClass "div" "ifd" $ do
+  let ws = inWorkers i
+      live = length ws
+      blocked = length (filter (isJust . wkWaitingOn) ws)
+  elClass "div" "workers" $ do
+    elAttr "span" ("class" =: "label" <> "title" =: "nix-eval-jobs workers: green evaluating, amber blocked on an IFD") (text "Workers")
+    elClass "span" "boxes" $ forM_ ws $ \w -> elAttr "span"
+      ("class" =: (if isJust (wkWaitingOn w) then "w wait" else "w eval") <> "title" =: workerTip w) blank
+    elAttr "a" ("class" =: "val" <> "href" =: ("#/ifd/" <> showT (inRun i)) <> "title" =: "IFDs and workers of this evaluation") $
+      text (if live == 0 then "none live" else if blocked == 0 then showT live <> " evaluating" else showT blocked <> " of " <> showT live <> " on IFD")
+  forM_ (zip [0 :: Int ..] (take 3 (inWaits i))) $ \(k, w) ->
+    -- A convoy: half or more of the workers behind one build.
+    waitRow clock (k == 0 && wtWorkers w >= 2 && wtWorkers w * 2 >= live) live w
+  when (length (inWaits i) > 3) $
+    elClass "div" "wait more" (text ("+ " <> showT (length (inWaits i) - 3) <> " more IFDs being waited on"))
+  -- What is building that no worker waits on directly: usually the
+  -- dependencies of an IFD.
+  let waited = S.fromList (map wtDrv (inWaits i))
+  forM_ (take 2 [ b | b <- inBuilding i, not (S.member (bgDrv b) waited) ]) $ \b ->
+    elClass "div" "wait build" $ do
+      elAttr "div" ("class" =: "drv" <> "title" =: bgDrv b) (text (shortDrv (bgDrv b)))
+      elClass "div" "meta" $ do
+        el "span" (text ("building " <> maybe "locally" ("on " <>) (bgHost b)))
+        el "span" $ dynText (ffor clock (\c -> fmtAgo c (bgSince b)))
+  where
+    workerTip w = "pid " <> showT (wkPid w) <> ", " <> showT (wkJobs w) <> " jobs"
+      <> maybe "" (\r -> ", " <> showT r <> " MB") (wkRssMb w)
+      <> maybe "" (\d -> ", blocked on " <> shortDrv d) (wkWaitingOn w)
+
+-- | An IFD workers are blocked on.
+waitRow :: W t m => Dynamic t UTCTime -> Bool -> Int -> IfdWait -> m ()
+waitRow clock convoy live w = elClass "div" (if convoy then "wait convoy" else "wait") $ do
+  elAttr "div" ("class" =: "drv" <> "title" =: wtDrv w) (text (shortDrv (wtDrv w)))
+  elClass "div" "meta" $ do
+    el "span" $ text $ if convoy
+      then showT (wtWorkers w) <> " of " <> showT live <> " workers waiting"
+      else showT (wtWorkers w) <> (if wtWorkers w == 1 then " worker" else " workers")
+    el "span" $ dynText (ffor clock (\c -> fmtAgo c (wtSince w)))
+    forM_ (wtHost w) $ \h -> elAttr "span" ("class" =: "shrink" <> "title" =: h) $
+      dynText (ffor clock (\c -> "building on " <> h <> maybe "" (\s -> " for " <> fmtAgo c s) (wtBuildingSince w)))
 
 -- | An icon linking to Hydra's page for an evaluation (hydrometer is
 -- served from Hydra's host).
@@ -468,6 +516,9 @@ evalsPage = do
   vD <- fetchDyn (Just 30) (constDyn "api/evals?limit=60") :: m (Dynamic t (Maybe A.Value))
   let evals = (>>= A.parseMaybe (A.withObject "e" (A..: "evals"))) <$> vD :: Dynamic t (Maybe Table)
   tableWidget [] evals
+  el "h3" (text "Evaluation-time builds (IFD)")
+  elClass "p" "muted" (text "Each hydra-eval-jobset run seen in hydra-evaluator's journal, including running ones and ones that wrote no evaluation (failed, or nothing new). ifd wait: worker time blocked on import-from-derivation builds; all waiting: how long every worker was blocked at once. Click a run for its IFDs and workers.")
+  tableWidget [] =<< fetchDyn (Just 30) (constDyn "api/ifd?limit=40")
 
 evalPage :: forall t m. W t m => Int -> m ()
 evalPage eid = do
@@ -495,8 +546,14 @@ evalPage eid = do
         stat "CPU (measured)" (maybe "–" (\h -> fmtNum h <> " h") (numOf "cpu_h"))
     Just _ -> elClass "div" "muted" (text "No such evaluation.")
     Nothing -> loading
-  el "h3" (text "What the unfinished builds wait on")
   clock <- clockDyn
+  el "h3" (text "Evaluation-time builds (IFD)")
+  iD <- fetchDyn Nothing (constDyn ("api/eval/" <> showT eid <> "/ifd")) :: m (Dynamic t (Maybe (Maybe EvalIfd)))
+  dyn_ $ ffor iD $ \case
+    Nothing -> loading
+    Just Nothing -> elClass "p" "muted" (text "No IFD or nix-eval-jobs trace lines were seen for this evaluation (it predates them, or is older than the retention).")
+    Just (Just x) -> ifdSection clock x
+  el "h3" (text "What the unfinished builds wait on")
   bD <- fetchDyn (Just 60) (constDyn ("api/eval/" <> showT eid <> "/blockers")) :: m (Dynamic t (Maybe EvalBlockers))
   dyn_ $ ffor bD $ \case
     Nothing -> loading
@@ -550,6 +607,90 @@ blockersView clock b = do
   elClass "p" "muted" $ text $ "Worked out from " <> showT (ebDrvsRead b) <> " derivations in "
     <> fmtDuration (fromIntegral (ebDurationMs b) / 1000)
     <> (if ebTruncated b then " (stopped early: too many derivations; counts are incomplete)" else "") <> "."
+
+-- | One hydra-eval-jobset run's IFDs and workers, running or finished.
+ifdPage :: forall t m. W t m => Int -> m ()
+ifdPage run = do
+  clock <- clockDyn
+  iD <- fetchDyn (Just 15) (constDyn ("api/ifd/" <> showT run)) :: m (Dynamic t (Maybe (Maybe EvalIfd)))
+  dyn_ $ ffor iD $ \case
+    Nothing -> loading
+    Just Nothing -> el "h2" (text "No such evaluation run.")
+    Just (Just x) -> do
+      el "h2" (text ("Evaluating " <> eiProject x <> ":" <> eiJobset x))
+      elClass "p" "muted" $ do
+        text ("hydra-eval-jobset pid " <> showT (eiPid x) <> ", from " <> fmtTime (eiStarted x)
+              <> (if eiRunning x then ", running" else " to " <> fmtTime (eiLastSeen x)))
+        forM_ (eiEvalId x) $ \e -> text " · " >> elAttr "a" ("href" =: ("#/eval/" <> showT e)) (text ("eval " <> showT e))
+        when (isNothing (eiEvalId x) && not (eiRunning x)) $ text " · hydra recorded no evaluation (it failed, or found nothing new)"
+      ifdSection clock x
+
+-- | IFD totals, the live state while running, and the IFDs that cost most.
+ifdSection :: W t m => Dynamic t UTCTime -> EvalIfd -> m ()
+ifdSection clock x = do
+  let pct a b = if b > 0 then fmtPct (min 1 (fromIntegral a / fromIntegral b)) else "–"
+      secs ms = fmtDuration (fromIntegral ms / 1000)
+      spanMs = eiLastSeen x - eiStarted x
+      top3 m = T.intercalate " · " [ k <> " " <> showT v | (k, v) <- take 3 (sortOn (Down . snd) (M.toList m)) ]
+  elClass "div" "stats" $ do
+    statSub "IFDs" (showT (eiIfds x)) (top3 (eiByStatus x))
+    statSub "Workers blocked on IFD" (pct (eiWaitMs x) (eiWorkerMs x))
+      (secs (eiWaitMs x) <> " of " <> secs (eiWorkerMs x) <> " worker time")
+    statSub "Every worker blocked" (secs (eiAllWaitingMs x)) (pct (eiAllWaitingMs x) spanMs <> " of the evaluation")
+    statSub "Workers" (showT (eiWorkers x))
+      (T.intercalate ", " (maybe [] (\l -> ["median life " <> secs l]) (eiMedianLifeMs x)
+                           ++ maybe [] (\j -> [fmtNum j <> " jobs each"]) (eiMedianJobs x)))
+    statSub "Worker start" (maybe "–" (\ms -> fmtNum (ms / 1000) <> " s") (eiMeanInitMs x)) ("exits: " <> top3 (eiExitReasons x))
+    statSub "Builds" (showT (eiBuilds x)) (showT (eiBuildFailures x) <> " failed")
+  forM_ (eiNow x) $ \i -> do
+    el "h3" (text "Now")
+    if null (inWaits i) then elClass "p" "muted" (text (showT (length (inWorkers i)) <> " workers, none blocked on an IFD.")) else
+      elClass "div" "scroll" $ elClass "table" "data" $ do
+        el "thead" $ el "tr" $ do
+          elClass "th" "num" (text "workers")
+          mapM_ (el "th" . text) ["blocked on", "since", "building on"]
+        el "tbody" $ forM_ (inWaits i) $ \w -> el "tr" $ do
+          elClass "td" "num" (text (showT (wtWorkers w) <> " / " <> showT (length (inWorkers i))))
+          elAttr "td" ("class" =: "mono" <> "title" =: wtDrv w) (text (shortDrv (wtDrv w)))
+          el "td" $ dynText (ffor clock (\c -> fmtAgo c (wtSince w)))
+          el "td" $ forM_ (wtHost w) $ \h -> dynText (ffor clock (\c -> h <> maybe "" (\s -> " for " <> fmtAgo c s) (wtBuildingSince w)))
+    when (not (null (inBuilding i))) $ do
+      elClass "p" "muted" (text "Builds the evaluation started whose outputs are not in the store yet (an IFD, or one of its dependencies):")
+      elClass "div" "scroll" $ elClass "table" "data" $ do
+        el "thead" $ el "tr" $ mapM_ (el "th" . text) ["building", "on", "for"]
+        el "tbody" $ forM_ (inBuilding i) $ \b -> el "tr" $ do
+          elAttr "td" ("class" =: "mono" <> "title" =: bgDrv b) (text (shortDrv (bgDrv b)))
+          el "td" (text (fromMaybe "linux-0 (local)" (bgHost b)))
+          el "td" $ dynText (ffor clock (\c -> fmtAgo c (bgSince b)))
+    elClass "p" "muted" (text "Live nix-eval-jobs workers (a worker restarts when it outgrows its memory limit):")
+    elClass "div" "scroll" $ elClass "table" "data" $ do
+      el "thead" $ el "tr" $ do
+        mapM_ (\h -> elClass "th" "num" (text h)) ["pid", "jobs", "memory"]
+        mapM_ (el "th" . text) ["state", "spawned"]
+      el "tbody" $ forM_ (inWorkers i) $ \w -> el "tr" $ do
+        elClass "td" "num" (text (showT (wkPid w)))
+        elClass "td" "num" (text (showT (wkJobs w)))
+        elClass "td" "num" (text (maybe "" (\r -> showT r <> " MB") (wkRssMb w)))
+        case wkWaitingOn w of
+          Just d -> elAttr "td" ("title" =: d) $ do
+            elClass "span" "tag state-waiting" (text "blocked") >> text (" on " <> shortDrv d <> " ")
+            forM_ (wkWaitingSince w) $ \s -> dynText (ffor clock (\c -> "for " <> fmtAgo c s))
+          Nothing -> el "td" $ do
+            elClass "span" "tag state-building" (text "evaluating") >> text " "
+            dynText (ffor clock (\c -> "last job " <> fmtAgo c (wkLastActive w) <> " ago"))
+        el "td" $ forM_ (wkSince w) $ \s -> dynText (ffor clock (\c -> fmtAgo c s <> " ago"))
+  let rowsOf (Table _ rs) = rs
+  when (not (null (rowsOf (eiTop x)))) $ do
+    el "h3" (text "IFDs waited on longest")
+    elClass "p" "muted" (text "Worker time blocked on each IFD, summed over workers. A worker blocked on an IFD that another worker is building reports it already-valid when it is done, after the same wait.")
+    tableWidget ["drv"] (constDyn (Just (eiTop x)))
+  when (not (null (rowsOf (eiFailed x)))) $ do
+    el "h3" (text "Failed IFDs")
+    elClass "p" "muted" (text "More than one attempt: the same failing build was tried again, usually once by each worker that needed it.")
+    tableWidget ["drv"] (constDyn (Just (eiFailed x)))
+  when (not (null (rowsOf (eiBuildErrors x)))) $ do
+    el "h3" (text "Failed builds during evaluation")
+    tableWidget ["drv"] (constDyn (Just (eiBuildErrors x)))
 
 buildPage :: forall t m. W t m => Int -> m ()
 buildPage bid = do

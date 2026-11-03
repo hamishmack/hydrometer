@@ -33,6 +33,7 @@ import Text.Read (readMaybe)
 import Hydrometer.Api (CacheNow)
 import Hydrometer.Server.Blockers (BlockerEnv, evalBlockers)
 import Hydrometer.Server.Db
+import Hydrometer.Server.EvalIfd (IfdKey (..), evalIfd, ifdRuns)
 import Hydrometer.Server.Ingest (AgentState)
 import Hydrometer.Server.Now (buildNow)
 import Hydrometer.Server.Queries
@@ -68,6 +69,10 @@ apiIndex = A.object
       , "GET /api/eval/{id}/blockers" .= ("What an evaluation's unfinished builds wait on: counts by state, and the steps holding the most builds, with why runnable ones are not dispatched." :: Text)
       , "GET /api/eval/{id}/graph" .= ("The steps of an evaluation (the 300 longest) and which of them each waited for, from the .drv files: nodes with start/stop, kind (built or substituted), status; edges [dependency, dependent] as node indexes." :: Text)
       , "GET /api/eval/{id}/substitutions" .= ("An evaluation's substituted steps (the 300 longest): where the outputs came from (a LAN peer via peernix, or the first public cache that has them), what was downloaded (closure paths registered during the step, NAR bytes, by source), and output and closure sizes." :: Text)
+      , "GET /api/eval/{id}/ifd" .= ("Evaluation-time builds (import-from-derivation) of an evaluation, from hydra-evaluator's trace lines: IFDs by status, worker-ms blocked on them against worker-ms alive, how long every worker was blocked at once, the IFDs waited on longest, failed IFDs and how often each was retried, failed builds, nix-eval-jobs worker churn; and while it runs (now), what each worker is doing and which IFDs they wait on. null when no trace lines were seen." :: Text)
+      , "GET /api/ifd?limit" .= ("Recent evaluations seen in hydra-evaluator's journal (including running ones, which have no eval_id yet) with IFD totals; run is the id for /api/ifd/{run}." :: Text)
+      , "GET /api/ifd/{run}" .= ("As /api/eval/{id}/ifd, by run (from /api/ifd or the now endpoint's evals[].ifd.run)." :: Text)
+      , "GET /api/ifd/latest?jobset&project" .= ("As /api/eval/{id}/ifd, for the latest evaluation of a jobset (e.g. jobset=pullrequest-2618), running or not." :: Text)
       , "GET /api/build/{id}" .= ("The steps of one build with their resource use." :: Text)
       , "GET /api/step/{build}/{stepnr}/series" .= ("CPU cores, memory and network of one step over its life." :: Text)
       ]
@@ -127,6 +132,10 @@ app env req respond = do
           withConn db (\c -> evalBlockers (envBlockers env) c qs eid) >>= ok
       ["api", "eval", i, "graph"] | Just eid <- readMaybe (T.unpack i) -> withConn db (\c -> evalGraph (envGraph env) c eid) >>= ok
       ["api", "eval", i, "substitutions"] | Just eid <- readMaybe (T.unpack i) -> withConn db (\c -> evalSubstitutions (envSubst env) c eid) >>= ok
+      ["api", "eval", i, "ifd"] | Just eid <- readMaybe (T.unpack i) -> withConn db (\c -> evalIfd c (IfdEval eid)) >>= ok
+      ["api", "ifd"] -> withConn db (\c -> ifdRuns c (maybe 50 id (qInt "limit"))) >>= ok
+      ["api", "ifd", "latest"] | Just j <- q "jobset" -> withConn db (\c -> evalIfd c (IfdLatest (q "project") j)) >>= ok
+      ["api", "ifd", i] | Just run <- readMaybe (T.unpack i) -> withConn db (\c -> evalIfd c (IfdRun run)) >>= ok
       ["api", "build", i] | Just bid <- readMaybe (T.unpack i) -> withConn db (\c -> buildSteps c bid) >>= ok
       ["api", "step", b, s, "series"] | Just bid <- readMaybe (T.unpack b), Just sn <- readMaybe (T.unpack s) ->
           withConn db (\c -> stepSeries c bid sn) >>= ok

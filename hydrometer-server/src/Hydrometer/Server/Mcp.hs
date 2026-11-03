@@ -41,9 +41,10 @@ instructions = T.unlines
   , "macOS builder (and linux-0), attributed to the hydra build step or evaluation that used them."
   , "Start with `now` for the current state, `top_jobs` for what is expensive, `bottlenecks` to see"
   , "whether the farm is CPU/memory/network/slot/scheduler limited, and `explain_eval` for why an"
-  , "evaluation (a PR) is slow. `schema` lists the SQL views (hydrometer.v_*) with documentation;"
-  , "`sql` runs read-only SQL against them and against hydra's own tables (builds, buildsteps,"
-  , "jobsets, jobsetevals, jobsetevalmembers). Times in arguments are hours back from now."
+  , "evaluation (a PR) is slow, and `eval_ifd` for what its nix-eval-jobs workers are blocked on"
+  , "(import-from-derivation builds). `schema` lists the SQL views (hydrometer.v_*) with"
+  , "documentation; `sql` runs read-only SQL against them and against hydra's own tables (builds,"
+  , "buildsteps, jobsets, jobsetevals, jobsetevalmembers). Times in arguments are hours back from now."
   ]
 
 tools :: [A.Value]
@@ -64,6 +65,8 @@ tools =
       [ ("eval_id", "number", "hydra jobsetevals.id") ]
   , tool "eval_blockers" "Why an evaluation's remaining builds are not finishing: how many are building, orphaned (hydra lists them running, no builder has them), runnable but waiting for a machine, or waiting on dependencies, and the steps holding the most builds, with why runnable ones are not dispatched (e.g. no builder offers a required feature, or the ones that do have no capacity)."
       [ ("eval_id", "number", "hydra jobsetevals.id") ]
+  , tool "eval_ifd" "What an evaluation's nix-eval-jobs workers are (or were) blocked on: import-from-derivation (IFD) builds. While it runs: each worker's state (evaluating or waiting on which IFD), the IFDs waited on (drv, how many workers, since when, which builder), and builds in flight. For any evaluation: IFDs by status, worker time blocked vs alive, time with every worker blocked, the IFDs waited on longest, failed IFDs and how often each was retried, failed builds, worker churn. Give eval_id (hydra jobsetevals.id, finished evaluations) or jobset (latest evaluation of it, running or not, e.g. pullrequest-2618, optionally with project); neither lists recent evaluations."
+      [ ("eval_id", "number", "hydra jobsetevals.id"), ("jobset", "string", "jobset name, e.g. pullrequest-2618"), ("project", "string", "project, to disambiguate jobset") ]
   , tool "explain_build" "The steps of one hydra build with their resource use."
       [ ("build_id", "number", "hydra builds.id") ]
   , tool "schema" "The documented hydrometer views and tables, with column names and descriptions. Read this before writing SQL." []
@@ -77,7 +80,8 @@ tools =
       , "inputSchema" .= A.object
           [ "type" .= ("object" :: Text)
           , "properties" .= A.object [ K.fromText p .= A.object ["type" .= ty, "description" .= desc] | (p, ty, desc) <- ps ]
-          , "required" .= [ p | (p, _, _) <- ps, p `elem` ["name", "eval_id", "build_id", "query"] ]
+          -- eval_ifd takes eval_id or jobset (or neither).
+          , "required" .= [ p | (p, _, _) <- ps, p `elem` ["name", "eval_id", "build_id", "query"], n /= "eval_ifd" ]
           ] ]
 
 runMcp :: Text -> Db -> IO ()
@@ -150,6 +154,11 @@ callTool env name args = case name of
   "recent_evals" -> api "/api/evals" [("limit", T.pack (show (num "limit" 20)))]
   "explain_eval" -> api ("/api/eval/" <> T.pack (show (num "eval_id" 0))) []
   "eval_blockers" -> api ("/api/eval/" <> T.pack (show (num "eval_id" 0)) <> "/blockers") []
+  "eval_ifd"
+    | num "eval_id" 0 > 0 -> api ("/api/eval/" <> T.pack (show (num "eval_id" 0)) <> "/ifd") []
+    | not (T.null (str "jobset" "")) ->
+        api "/api/ifd/latest" ([("jobset", str "jobset" "")] ++ [ ("project", pr) | let pr = str "project" "", not (T.null pr) ])
+    | otherwise -> api "/api/ifd" [("limit", "20")]
   "explain_build" -> api ("/api/build/" <> T.pack (show (num "build_id" 0))) []
   "schema" -> A.toJSON <$> withConn (meDb env) (\c -> queryTableReadOnly c 30000 2000 schemaSql)
   "sql" -> A.toJSON <$> withConn (meDb env) (\c -> queryTableReadOnly c 30000 500 (str "query" ""))

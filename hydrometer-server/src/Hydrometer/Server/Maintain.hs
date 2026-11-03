@@ -16,6 +16,7 @@ import Database.PostgreSQL.Simple
 import System.IO (hPutStrLn, stderr)
 
 import Hydrometer.Server.Db
+import Hydrometer.Server.EvalIfd (resolveEvaluations)
 
 -- | Match runs to hydra build steps by output path.  The same output can
 -- belong to several step rows (retries, or a step re-run in another build);
@@ -89,6 +90,11 @@ retention c days = do
   void $ execute c "DELETE FROM hydrometer.machine_status_samples WHERE t < now() - make_interval(days => ?)" (Only days)
   void $ execute c "DELETE FROM hydrometer.queue_samples WHERE t < now() - make_interval(days => ?)" (Only days)
   void $ execute c "DELETE FROM hydrometer.log_counts WHERE t < now() - make_interval(days => ?)" (Only days)
+  -- With their workers, IFDs and builds (ON DELETE CASCADE).
+  void $ execute c "DELETE FROM hydrometer.evaluations WHERE last_seen < now() - make_interval(days => ?)" (Only days)
+  -- Workers that crashed while blocked on an IFD leave a wait behind.
+  void $ execute_ c "DELETE FROM hydrometer.eval_ifd_waits w USING hydrometer.evaluations v \
+    \WHERE v.id = w.evaluation AND v.last_seen < now() - interval '1 day'"
   void $ execute_ c "DELETE FROM hydrometer.cache_samples WHERE t < now() - interval '400 days'"
   void $ execute_ c "DELETE FROM hydrometer.host_minute WHERE t < now() - interval '400 days'"
   void $ execute_ c "DELETE FROM hydrometer.runs WHERE last_seen < now() - interval '400 days'"
@@ -103,6 +109,7 @@ runMaintenance d days = do
     step "partitions" $ when dueHourly $ withConn d $ \c ->
       void (query_ c "SELECT hydrometer.ensure_partitions()" :: IO [Only ()])
     step "resolve" $ void $ withConn d resolveRuns
+    step "resolve evaluations" $ void $ withConn d resolveEvaluations
     step "rollup" $ withConn d rollup
     step "retention" $ when dueHourly $ withConn d (`retention` days)
     when dueHourly $ writeIORef lastHourly (Just now)

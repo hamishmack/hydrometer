@@ -79,6 +79,7 @@ migrations =
   , (2, $(embedFile "sql/002_builders.sql"))
   , (3, $(embedFile "sql/003_cache_logs.sql"))
   , (4, $(embedFile "sql/004_vnodes.sql"))
+  , (5, $(embedFile "sql/005_eval_ifd.sql"))
   ]
 
 viewsSql :: ByteString

@@ -175,11 +175,13 @@ columnFmt c
   | c `elem` ["step_kind"] = FTag
   | c `elem` ["build"] = FLink "#/build/"
   | c `elem` ["eval_id"] = FLink "#/eval/"
+  | c `elem` ["run"] = FLink "#/ifd/"
   | c `elem` ["machine"] = FLink "#/machine/"
-  | c `elem` ["started", "stopped", "evaluated", "last_finish", "first_step"] = FTime
-  | c `elem` ["drv_name", "job", "key", "component"] = FMono
+  | c `elem` ["started", "stopped", "evaluated", "last_finish", "first_step", "first_done", "last_done"] = FTime
+  | c `elem` ["drv_name", "job", "key", "component", "error"] = FMono
   | "rss" `T.isInfixOf` c || "bytes" `T.isInfixOf` c = FBytes
-  | c `elem` ["wall_s", "import_s", "build_s", "upload_s", "cpu_s", "eval_s"] = FSecs
+  | c `elem` ["wall_s", "import_s", "build_s", "upload_s", "cpu_s", "eval_s"
+             , "wait_s", "max_wait_s", "ifd_wait_s", "all_waiting_s", "span_s"] = FSecs
   | "util" `T.isSuffixOf` c = FPct
   | otherwise = FNum
 

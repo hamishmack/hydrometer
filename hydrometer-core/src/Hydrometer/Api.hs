@@ -15,6 +15,11 @@ module Hydrometer.Api
   , EvalNow (..)
   , PendingEval (..)
   , EvalBlockers (..)
+  , IfdNow (..)
+  , IfdWorker (..)
+  , IfdWait (..)
+  , IfdBuilding (..)
+  , EvalIfd (..)
   , CacheNow (..)
   , LogPattern (..)
   , Blocker (..)
@@ -199,6 +204,9 @@ data EvalNow = EvalNow
     -- ^ While adding: jobs checked against existing builds so far.
   , eFlake :: !(Maybe Text)
     -- ^ The flake being evaluated, e.g. @github:owner/repo/rev@.
+  , eIfd :: !(Maybe IfdNow)
+    -- ^ What its nix-eval-jobs workers are doing, from hydra-evaluator's
+    -- trace lines (absent without them).
   } deriving stock (Show, Eq, Generic)
 
 instance ToJSON EvalNow where toJSON = genericToJSON apiOptions
@@ -310,3 +318,128 @@ data LogPattern = LogPattern
 
 instance ToJSON LogPattern where toJSON = genericToJSON apiOptions
 instance FromJSON LogPattern where parseJSON = genericParseJSON apiOptions
+
+-- | A running evaluation's import-from-derivation (IFD) builds and
+-- nix-eval-jobs workers, from the trace lines in hydra-evaluator's journal.
+-- Each worker blocks on an IFD until it is built, so a slow one can hold
+-- every worker.
+data IfdNow = IfdNow
+  { inRun          :: !Int
+    -- ^ hydrometer.evaluations.id (see @/api/ifd/{run}@).
+  , inWorkers      :: ![IfdWorker]
+    -- ^ Live workers: started, not exited, and active in the last 10 minutes
+    -- or waiting on an IFD.
+  , inWaits        :: ![IfdWait]
+    -- ^ The IFDs workers are waiting on now, the most workers first.
+  , inBuilding     :: ![IfdBuilding]
+    -- ^ Builds the evaluation started (an IFD or one of its dependencies)
+    -- whose outputs are not in the store yet, newest first.
+  , inIfds         :: !Int
+    -- ^ IFDs finished so far.
+  , inWaitMs       :: !Int64
+    -- ^ Worker-milliseconds spent waiting on them.
+  , inAllWaitingMs :: !Int64
+    -- ^ How long every live worker has been waiting on an IFD at once.
+  } deriving stock (Show, Eq, Generic)
+
+instance ToJSON IfdNow where toJSON = genericToJSON apiOptions
+instance FromJSON IfdNow where parseJSON = genericParseJSON apiOptions
+
+-- | One nix-eval-jobs worker process.
+data IfdWorker = IfdWorker
+  { wkPid          :: !Int
+  , wkSince        :: !(Maybe Int64)
+    -- ^ When it was spawned (epoch ms), if its start was seen.
+  , wkJobs         :: !Int
+    -- ^ Attributes it has evaluated.
+  , wkLastActive   :: !Int64
+    -- ^ Its last job or IFD line.
+  , wkRssMb        :: !(Maybe Int)
+  , wkWaitingOn    :: !(Maybe Text)
+    -- ^ The .drv of the IFD it is blocked on, if any.
+  , wkWaitingSince :: !(Maybe Int64)
+  } deriving stock (Show, Eq, Generic)
+
+instance ToJSON IfdWorker where toJSON = genericToJSON apiOptions
+instance FromJSON IfdWorker where parseJSON = genericParseJSON apiOptions
+
+-- | An IFD that workers are blocked on.
+data IfdWait = IfdWait
+  { wtDrv           :: !Text
+  , wtWorkers       :: !Int
+    -- ^ How many workers wait on it.
+  , wtSince         :: !Int64
+    -- ^ When the first of them started waiting.
+  , wtHost          :: !(Maybe Text)
+    -- ^ Where its latest build started, when the evaluation logged one.
+    -- Often a dependency is what is building: see 'inBuilding'.
+  , wtBuildingSince :: !(Maybe Int64)
+  } deriving stock (Show, Eq, Generic)
+
+instance ToJSON IfdWait where toJSON = genericToJSON apiOptions
+instance FromJSON IfdWait where parseJSON = genericParseJSON apiOptions
+
+-- | A build an evaluation started (@building '...' on '...'@).
+data IfdBuilding = IfdBuilding
+  { bgDrv   :: !Text
+  , bgHost  :: !(Maybe Text)
+    -- ^ The remote builder; Nothing for a local build.
+  , bgSince :: !Int64
+  } deriving stock (Show, Eq, Generic)
+
+instance ToJSON IfdBuilding where toJSON = genericToJSON apiOptions
+instance FromJSON IfdBuilding where parseJSON = genericParseJSON apiOptions
+
+-- | One evaluation's IFDs and workers (@/api/ifd/{run}@,
+-- @/api/eval/{id}/ifd@).  Worker-milliseconds sum over workers, so with 8
+-- workers an hour of evaluation is 8 worker-hours.
+data EvalIfd = EvalIfd
+  { eiRun          :: !Int
+  , eiPid          :: !Int
+    -- ^ hydra-eval-jobset's pid.
+  , eiProject      :: !Text
+  , eiJobset       :: !Text
+  , eiEvalId       :: !(Maybe Int)
+    -- ^ hydra's jobsetevals.id, once hydra has written it.
+  , eiStarted      :: !Int64
+    -- ^ The first trace line (epoch ms).
+  , eiLastSeen     :: !Int64
+    -- ^ The last trace line; now, while it runs.
+  , eiRunning      :: !Bool
+  , eiIfds         :: !Int
+  , eiByStatus     :: !(Map Text Int)
+    -- ^ IFDs by how they ended: built, substituted, already-valid (often
+    -- after waiting on another worker's build), permanent-failure, …
+  , eiWaitMs       :: !Int64
+    -- ^ Worker-milliseconds blocked on IFDs.
+  , eiWorkerMs     :: !Int64
+    -- ^ Worker-milliseconds alive.
+  , eiAllWaitingMs :: !Int64
+    -- ^ How long every live worker was waiting on an IFD at once
+    -- (approximate).
+  , eiWorkers      :: !Int
+    -- ^ Worker processes spawned.
+  , eiExitReasons  :: !(Map Text Int)
+    -- ^ @max-memory@ (restarted to free memory), @exit@ (done), or @none@
+    -- (no exit line: still running, or crashed).
+  , eiMedianLifeMs :: !(Maybe Int64)
+  , eiMedianJobs   :: !(Maybe Double)
+  , eiMeanInitMs   :: !(Maybe Double)
+  , eiJobs         :: !Int
+  , eiJobErrors    :: !Int
+  , eiMaxRssMb     :: !(Maybe Int)
+  , eiBuilds       :: !Int
+    -- ^ Builds the evaluation started (IFDs and their dependencies).
+  , eiBuildFailures :: !Int
+  , eiTop          :: !Table
+    -- ^ The IFDs workers waited on longest.
+  , eiFailed       :: !Table
+    -- ^ IFDs that failed, and how many times each was tried.
+  , eiBuildErrors  :: !Table
+    -- ^ Failed builds, by derivation and builder.
+  , eiNow          :: !(Maybe IfdNow)
+    -- ^ While it runs.
+  } deriving stock (Show, Eq, Generic)
+
+instance ToJSON EvalIfd where toJSON = genericToJSON apiOptions
+instance FromJSON EvalIfd where parseJSON = genericParseJSON apiOptions

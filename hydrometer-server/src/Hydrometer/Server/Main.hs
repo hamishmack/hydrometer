@@ -23,6 +23,7 @@ import Hydrometer.Server.Blockers (evalBlockers, newBlockerEnv)
 import Hydrometer.Server.CacheHealth (runCacheMonitor)
 import Hydrometer.Server.Config
 import Hydrometer.Server.Db
+import Hydrometer.Server.EvalIfd (runIfdScanner)
 import Hydrometer.Server.Http
 import Hydrometer.Server.Ingest
 import Hydrometer.Server.Logs (journalPatterns, runLogScanner)
@@ -86,7 +87,10 @@ run cmd cfg rest = case (cmd, rest) of
     hPutStrLn stderr ("hydrometer serving on " <> host <> ":" <> show port)
     mapConcurrently_ id $
       [ Warp.runSettings settings (app env)
-      , runMaintenance d (fromMaybe 14 (retentionDays cfg)) ]
+      , runMaintenance d (fromMaybe 14 (retentionDays cfg))
+        -- hydra-evaluator's IFD and nix-eval-jobs trace lines, like
+        -- EvalProgress's progress lines, always: without them it finds none.
+      , runIfdScanner d ]
       ++ [ runQueuePoller d mgr qr queue | Just qr <- [queueRunner cfg] ]
       ++ [ runAgentPoller d mgr pollSec agentStates a | a <- agents cfg ]
       ++ [ runCacheMonitor d tlsMgr u cacheState | Just u <- [cacheUrl cfg] ]

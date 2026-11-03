@@ -79,6 +79,13 @@ Its pages are:
 - **Evaluations** / **Evaluation**: how a PR's time is split between
   importing, building and uploading, a timeline of running steps against
   unfinished builds, and the longest steps.
+- **Evaluation-time builds**: from hydra-evaluator's journal, what the
+  nix-eval-jobs workers wait on. A worker that needs an import-from-derivation
+  build blocks until it is built, so one slow build can hold them all; the
+  Now page's evaluation cards show each worker (evaluating or blocked) and the
+  IFDs being waited on, with an alert when half or more of them wait on one.
+  Per evaluation: IFDs by status, worker time blocked, the IFDs waited on
+  longest, failed IFDs and how often each was retried, and worker churn.
 
 ## For AI agents
 
@@ -86,7 +93,8 @@ See [docs/AGENTS.md](docs/AGENTS.md). In short:
 
 - **MCP**: `ssh x86_64-linux-0 hydrometer mcp` is a stdio MCP server. Its
   tools are `now`, `top_jobs`, `bottlenecks`, `machine`, `recent_evals`,
-  `explain_eval`, `explain_build`, `schema` and `sql` (read-only).
+  `explain_eval`, `eval_blockers`, `eval_ifd`, `explain_build`, `schema` and
+  `sql` (read-only).
 - **SQL**: the `hydrometer.v_*` views carry `COMMENT`s describing every
   column.
 - **HTTP**: `GET /api` describes the JSON API.

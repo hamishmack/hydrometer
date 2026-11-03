@@ -26,6 +26,7 @@ This is a stdio Model Context Protocol server. For Claude Code, add it to
 | `recent_evals {limit}` | Recent evaluations with progress, and the ones running now. |
 | `explain_eval {eval_id}` | Why is this PR slow? Time split into import, build and upload, a timeline of running steps against unfinished builds, and the longest steps. |
 | `eval_blockers {eval_id}` | What is this evaluation's remainder waiting on? Unfinished builds by state (building, orphaned, waiting for a machine, waiting on dependencies), and the steps holding the most builds, with why runnable ones are not dispatched (no builder offers a required feature, or the ones that do have no capacity, and why). |
+| `eval_ifd {eval_id \| jobset, project}` | What are an evaluation's nix-eval-jobs workers blocked on? Import-from-derivation (IFD) builds: while it runs, each worker's state and the IFDs waited on (how many workers, since when, on which builder) and builds in flight; for any evaluation, IFDs by status, worker time blocked against alive, time with every worker blocked, the IFDs waited on longest, failed IFDs and how often each was retried, failed builds, worker churn. `jobset` gives its latest evaluation, running or not (a running one has no `eval_id` yet); no argument lists recent evaluations. |
 | `explain_build {build_id}` | The steps of a build and what each one cost. |
 | `schema` | Every hydrometer view and table, with column docs. |
 | `sql {query}` | Read-only SQL (30 s timeout, 500 rows). |
@@ -67,6 +68,13 @@ linux-0, or the MCP `sql` tool.
   queue (paths queued, retrying, never tried after an hour).
 - `log_counts`: per minute, errors and warnings in hydra's journal, grouped by
   message pattern, with an example line.
+- `evaluations`: one row per hydra-eval-jobset process seen in
+  hydra-evaluator's journal (its IFD and nix-eval-jobs trace lines), with
+  hydra's `eval_id` once hydra has written the evaluation. Its
+  `eval_workers` (one row per nix-eval-jobs worker, job lines totalled),
+  `eval_ifds` (finished IFDs per derivation and status, with the workers that
+  waited and for how long), `eval_ifd_waits` (IFDs being waited on now) and
+  `eval_builds` (builds it started or saw fail, and where).
 
 **Functions**: `hydrometer.drv_name(drvpath)` and
 `hydrometer.classify_drv(drvpath)`, which returns package, kind, component,
@@ -130,10 +138,12 @@ GROUP BY 1, 2, 3, 4, 5 HAVING sum(rs.cpu_ms) < 1000 ORDER BY running DESC;
 - `/api/now`, `/api/top`, `/api/bottlenecks`, `/api/farm`
 - `/api/machine/{name}/series`, `/api/machine/{name}/steps`
 - `/api/evals`, `/api/eval/{id}`, `/api/eval/{id}/blockers`, `/api/build/{id}`
+- `/api/eval/{id}/ifd`, `/api/ifd`, `/api/ifd/{run}`, `/api/ifd/latest?jobset=…`
 - `/api/step/{build}/{stepnr}/series`
 
 `/api/now` also carries `pendingEvals` (in the order hydra-evaluator will
-start them), `cache` (the latest cache check) and `logPatterns` (journal errors
+start them), `evals[].ifd` (a running evaluation's workers and the IFDs they
+are blocked on), `cache` (the latest cache check) and `logPatterns` (journal errors
 and warnings of the last 15 minutes).
 
 On linux-0, `hydrometer blockers EVAL_ID` prints the blocker analysis and

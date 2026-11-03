@@ -145,3 +145,20 @@ table.data tr.dim td { opacity: .55; }
   .tag.status-ok { background: #1b3326; color: #a6dcb9; } .tag.status-bad { background: #3a1d1b; color: #ffc9c3; }
   .tag.kind-built { background: #1e2c47; color: #a9c4f5; }
 }
+/* A running evaluation's nix-eval-jobs workers and the IFDs they wait on. */
+.ifd { margin-top: 6px; border-top: 1px solid var(--line); padding-top: 6px; font-size: 12px; }
+.ifd .workers { display: grid; grid-template-columns: 48px 1fr auto; align-items: center; gap: 6px; }
+.ifd .workers .label { color: var(--muted); }
+.ifd .workers .val { font-family: var(--mono); white-space: nowrap; }
+.ifd .boxes { display: flex; flex-wrap: wrap; gap: 3px; }
+.ifd .w { width: 10px; height: 10px; border-radius: 2px; }
+.ifd .w.eval { background: var(--ok); }
+.ifd .w.wait { background: var(--warn); }
+.ifd .wait { padding: 4px 0 0; }
+.ifd .wait .drv { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ifd .wait .meta { color: var(--muted); display: flex; gap: 10px; white-space: nowrap; overflow: hidden; }
+.ifd .wait .meta > span { flex-shrink: 0; }
+.ifd .wait .meta > span.shrink { flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ifd .wait.convoy .drv { color: var(--bad); font-weight: 600; }
+.ifd .wait.convoy .meta > span:first-child { color: var(--bad); }
+.ifd .wait.build, .ifd .wait.more { opacity: .7; }

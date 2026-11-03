@@ -19,6 +19,7 @@ import Database.PostgreSQL.Simple (Connection)
 import Hydrometer.Api
 import Hydrometer.Server.Blockers (BlockerEnv, waitingAlerts)
 import Hydrometer.Server.Db (epochMs)
+import Hydrometer.Server.EvalIfd (ifdAlerts, ifdNow)
 import Hydrometer.Server.EvalProgress (EvalProgress (..), evalProgress)
 import Hydrometer.Server.Logs (recentLogPatterns)
 import Hydrometer.Server.Ingest (AgentState (..))
@@ -47,6 +48,7 @@ buildNow c agentsVar queueVar benv cacheVar evalSlots = do
   prefetched <- S.fromList <$> prefetchedSteps c
   evals <- runningEvals c
   progress <- mapM (\(p, j, st, _, _, _, _, _, _) -> maybe (pure Nothing) (evalProgress (p <> ":" <> j)) st) evals
+  ifds <- mapM (\(p, j, st, _, _, _, _, _, _) -> maybe (pure Nothing) (ifdNow c p j) st) evals
   pending <- pendingEvals c
   cache <- readTVarIO cacheVar
   logs <- recentLogPatterns c
@@ -69,8 +71,8 @@ buildNow c agentsVar queueVar benv cacheVar evalSlots = do
             , eLastEval = prev, eLastEvalSeconds = prevS, eTypicalSeconds = typ
             , eGuideJobset = guide, eGuideJobs = guideJobs
             , ePhase = epPhase <$> pr, eJobsEvaluated = epJobs =<< pr
-            , eJobsFailed = epFailed =<< pr, eJobsChecked = epChecked =<< pr, eFlake = flake }
-        | ((p, j, st, prev, prevS, typ, guide, guideJobs, flake), pr) <- zip evals progress
+            , eJobsFailed = epFailed =<< pr, eJobsChecked = epChecked =<< pr, eFlake = flake, eIfd = ifd }
+        | ((p, j, st, prev, prevS, typ, guide, guideJobs, flake), pr, ifd) <- zip3 evals progress ifds
         , let er = listToMaybe [ x | x@(n, _, _) <- evalRuns, n == p <> ":" <> j ] ]
       pendingNow =
         [ PendingEval { peProject = p, peJobset = j, peRequested = rq, peLastChecked = lc
@@ -100,6 +102,7 @@ buildNow c agentsVar queueVar benv cacheVar evalSlots = do
         ++ [ Alert "critical" (T.pack (show (length pendingNow)) <> " evaluations are pending, the oldest requested "
               <> T.pack (show (w `div` 60000)) <> " minutes ago, but none is running: hydra-evaluator may be stalled.")
            | null evals, Just w <- [oldestRequest], w > 10 * 60000 ]
+        ++ ifdAlerts now evalsNow
         -- A garbage collection that deletes blocks every addition to this
         -- host's store, including the builders' uploads (2026-10-27: a
         -- manual nix-collect-garbage -d stalled them for 30 minutes).

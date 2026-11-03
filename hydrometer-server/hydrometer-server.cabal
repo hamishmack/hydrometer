@@ -23,6 +23,7 @@ library
                     Hydrometer.Server.Config
                     Hydrometer.Server.Db
                     Hydrometer.Server.Drv
+                    Hydrometer.Server.EvalIfd
                     Hydrometer.Server.GcLock
                     Hydrometer.Server.Http
                     Hydrometer.Server.Ingest
@@ -67,3 +68,10 @@ executable hydrometer
   hs-source-dirs:   app
   build-depends:    base, hydrometer-server
   ghc-options:      -threaded -rtsopts "-with-rtsopts=-N4 -A16m"
+
+test-suite hydrometer-server-test
+  import:           warnings
+  type:             exitcode-stdio-1.0
+  main-is:          Main.hs
+  hs-source-dirs:   test
+  build-depends:    base, containers, text, time, hydrometer-server
