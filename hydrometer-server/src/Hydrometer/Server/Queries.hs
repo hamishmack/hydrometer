@@ -17,6 +17,7 @@ module Hydrometer.Server.Queries
   , buildSteps
   , stepSeries
   , busySteps
+  , liveRunSteps
   , prefetchedSteps
   , lastStepFinish
   , runningEvals
@@ -270,6 +271,16 @@ stepSeries c build stepnr = do
     \WHERE r.build = ? AND r.stepnr = ? ORDER BY 1"
     (build, stepnr)
   pure (tableToSeries 5000 tbl)
+
+-- | The hydra step each recently seen run was matched to (by output path,
+-- see 'Hydrometer.Server.Maintain.resolveRuns'), keyed by machine and the
+-- agent's run key.  Lets "now" pair a busy step with its run without relying
+-- on the agent's derivation name.
+liveRunSteps :: Connection -> IO [(Text, Text, Int, Int)]
+liveRunSteps c = query_ c
+  "SELECT machine, run_key, build, stepnr FROM hydrometer.runs \
+  \WHERE resolution = 'step' AND build IS NOT NULL AND stepnr IS NOT NULL \
+  \  AND last_seen > now() - interval '15 minutes'"
 
 -- | Steps hydra says are running now.
 busySteps :: Connection -> IO [(Text, Int, Int, Text, Text, Text, Text, Text, Maybe Text, Maybe Int64)]

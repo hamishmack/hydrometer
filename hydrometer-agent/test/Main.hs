@@ -5,6 +5,7 @@ import Data.Aeson qualified as A
 import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as BC
 import Data.IntMap.Strict qualified as IM
+import Data.Map.Strict qualified as M
 import Data.IORef
 import Data.Text (Text)
 import System.Exit (exitFailure)
@@ -35,6 +36,22 @@ main = do
   check "identifyFromBuildJson"
     (Just (RootInfo VmBuild "hello-1.0" ["/nix/store/xyz-hello-1.0"] (Just "x86_64-linux")))
     (bj >>= identifyFromBuildJson)
+
+  -- A structured-attrs derivation (llvm 21): no `name` in the env, and the
+  -- outputs map's first key is `dev`.
+  let bjSa = A.decodeStrict (BC.pack "{\"system\":\"x86_64-linux\",\"outputs\":{\"dev\":\"/nix/store/d-llvm-21.1.8-dev\",\"lib\":\"/nix/store/l-llvm-21.1.8-lib\",\"out\":\"/nix/store/o-llvm-21.1.8\"},\"env\":{\"NIX_ATTRS_JSON_FILE\":\"/build/.attrs.json\"}}")
+  check "identifyFromBuildJson structuredAttrs"
+    (Just "llvm-21.1.8")
+    (riName <$> (bjSa >>= identifyFromBuildJson))
+
+  check "nameFromOutputs without out"
+    (Just "foo-1.0")
+    (nameFromOutputs (M.fromList [("bin", "/nix/store/b-foo-1.0-bin"), ("lib", "/nix/store/l-foo-1.0-lib")]))
+
+  let attrs = A.decodeStrict (BC.pack "{\"name\":\"llvm-21.1.8\",\"system\":\"aarch64-darwin\",\"outputs\":{\"out\":\"/nix/store/o-llvm-21.1.8\",\"dev\":\"/nix/store/d-llvm-21.1.8-dev\"}}")
+  check "identifyFromAttrsJson"
+    (Just (RootInfo NativeBuild "llvm-21.1.8" ["/nix/store/d-llvm-21.1.8-dev", "/nix/store/o-llvm-21.1.8"] (Just "aarch64-darwin")))
+    (attrs >>= identifyFromAttrsJson NativeBuild)
 
   check "identifyEval"
     (Just (RootInfo Evaluation "haskell-nix:pullrequest-2606" [] Nothing))

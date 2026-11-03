@@ -22,6 +22,8 @@ module Hydrometer.Agent.Attribution
   , processClass
   , identifyFromEnv
   , identifyFromBuildJson
+  , identifyFromAttrsJson
+  , nameFromOutputs
   , identifyEval
   ) where
 
@@ -163,13 +165,38 @@ identifyFromEnv env = do
     { riKind = NativeBuild, riName = name, riOutputs = sort outs, riSystem = look "system" }
 
 -- | Identify a VM build from nix's external-builder @build.json@.
+--
+-- A derivation with @__structuredAttrs@ has no @name@ in its environment
+-- (nix passes its attributes in @NIX_ATTRS_JSON_FILE@, a path inside the
+-- VM), so the name then comes from the outputs.
 identifyFromBuildJson :: A.Value -> Maybe RootInfo
 identifyFromBuildJson = A.parseMaybe $ A.withObject "build.json" $ \o -> do
   outputs <- o .: "outputs" :: A.Parser (M.Map Text Text)
   env <- fromMaybe M.empty <$> (o .:? "env" :: A.Parser (Maybe (M.Map Text Text)))
   system <- o .:? "system"
-  let name = fromMaybe (maybe "" storeName (listToMaybe (M.elems outputs))) (M.lookup "name" env)
+  let name = fromMaybe "" (maybe (nameFromOutputs outputs) Just (M.lookup "name" env))
   pure RootInfo { riKind = VmBuild, riName = name, riOutputs = sort (M.elems outputs), riSystem = system }
+
+-- | Identify a build from its structured attributes (the file
+-- @NIX_ATTRS_JSON_FILE@ names), for builds whose environment carries no
+-- @name@ or outputs.
+identifyFromAttrsJson :: RunKind -> A.Value -> Maybe RootInfo
+identifyFromAttrsJson kind = A.parseMaybe $ A.withObject ".attrs.json" $ \o -> do
+  outputs <- o .: "outputs" :: A.Parser (M.Map Text Text)
+  name <- o .:? "name"
+  system <- o .:? "system"
+  case maybe (nameFromOutputs outputs) Just name of
+    Nothing -> fail "no name"
+    Just n -> pure RootInfo { riKind = kind, riName = n, riOutputs = sort (M.elems outputs), riSystem = system }
+
+-- | A derivation's name from its outputs (output name -> store path): the
+-- @out@ output's store name, otherwise the first output's with its
+-- @-<output>@ suffix removed (nix names output @o@ of @n@ as @n-o@).
+nameFromOutputs :: M.Map Text Text -> Maybe Text
+nameFromOutputs outs = case M.lookup "out" outs of
+  Just p -> Just (storeName p)
+  Nothing -> listToMaybe
+    [ fromMaybe sn (T.stripSuffix ("-" <> o) sn) | (o, p) <- M.toList outs, let sn = storeName p ]
   where
     storeName = T.drop 1 . T.dropWhile (/= '-') . T.takeWhileEnd (/= '/')
 

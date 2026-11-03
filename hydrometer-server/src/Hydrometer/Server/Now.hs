@@ -24,7 +24,7 @@ import Hydrometer.Server.EvalProgress (EvalProgress (..), evalProgress)
 import Hydrometer.Server.Logs (recentLogPatterns)
 import Hydrometer.Server.Ingest (AgentState (..))
 import Hydrometer.Server.GcLock (GcHolder (..), gcLockHolders)
-import Hydrometer.Server.Queries (busySteps, lastStepFinish, pendingEvals, prefetchedSteps, runningEvals)
+import Hydrometer.Server.Queries (busySteps, lastStepFinish, liveRunSteps, pendingEvals, prefetchedSteps, runningEvals)
 import Hydrometer.Server.QueueRunner
 import Hydrometer.Types
 
@@ -46,6 +46,7 @@ buildNow c agentsVar queueVar benv cacheVar evalSlots = do
   now <- epochMs <$> getCurrentTime
   steps <- busySteps c
   prefetched <- S.fromList <$> prefetchedSteps c
+  runSteps <- M.fromList . map (\(m, k, b, sn) -> ((m, k), (b, sn))) <$> liveRunSteps c
   evals <- runningEvals c
   progress <- mapM (\(p, j, st, _, _, _, _, _, _) -> maybe (pure Nothing) (evalProgress (p <> ":" <> j)) st) evals
   ifds <- mapM (\(p, j, st, _, _, _, _, _, _) -> maybe (pure Nothing) (ifdNow c p j) st) evals
@@ -58,7 +59,7 @@ buildNow c agentsVar queueVar benv cacheVar evalSlots = do
   let qrByName = M.fromList [ (qmName m, m) | m <- qsMachines qs ]
       stepsByMachine = M.fromListWith (++) [ (m, [s]) | s@(m, _, _, _, _, _, _, _, _, _) <- steps ]
       names = S.toList (S.fromList (M.keys agents ++ M.keys qrByName ++ filter (not . T.null) (M.keys stepsByMachine)))
-      machines = map (machineNow agents qrByName (stepOrphaned now qs) (stepUploading qs) prefetched stepsByMachine) names
+      machines = map (machineNow agents qrByName (stepOrphaned now qs) (stepUploading qs) prefetched runSteps stepsByMachine) names
       queues = [ QueueNow sys n w | (sys, n, w) <- qsQueues qs, n > 0 || sys `elem` activeSystems ]
       activeSystems = concatMap mSystems machines
       evalRuns = [ (rName r, r, h) | AgentState { asLatest = Just s } <- M.elems agents
@@ -150,9 +151,10 @@ machineNow
   :: Map Text AgentState -> Map Text QrMachine -> (Text -> Text -> Maybe Int64 -> Bool)
   -> (Text -> Text -> Bool)
   -> S.Set (Int, Int)
+  -> Map (Text, Text) (Int, Int)
   -> Map Text [(Text, Int, Int, Text, Text, Text, Text, Text, Maybe Text, Maybe Int64)]
   -> Text -> MachineNow
-machineNow agents qrByName isOrphan isUploading prefetched stepsByMachine name = MachineNow
+machineNow agents qrByName isOrphan isUploading prefetched runSteps stepsByMachine name = MachineNow
   { mName = name
   , mOs = aOs <$> info
   , mCpuCount = aCpuCount <$> info
@@ -202,9 +204,19 @@ machineNow agents qrByName isOrphan isUploading prefetched stepsByMachine name =
     hydraSteps = M.findWithDefault [] name stepsByMachine
     runs = maybe [] sRuns latest
     interval = maybe 5000 (hIntervalMs . sHost) latest
-    runByName = M.fromListWith (++) [ (rName r, [r]) | r <- runs, rKind r /= Evaluation ]
-    stepSlot (_, b, sn, proj, js, job, drvName, drvPath, sys, started) =
-      let r = M.lookup drvName runByName >>= listToMaybe
+    buildRuns = [ r | r <- runs, rKind r /= Evaluation ]
+    runByName = M.fromListWith (++) [ (rName r, [r]) | r <- buildRuns ]
+    -- The step each run was matched to by output path (hydrometer.runs).
+    -- Prefer it to the name: the agent's name for a run can differ from
+    -- hydra's derivation name (a structured-attrs VM build has no `name` in
+    -- its build.json env), and then the step showed with no run and the run
+    -- showed again as a build hydra did not schedule.
+    runByStep = M.fromList
+      [ (st, r) | r <- buildRuns, Just st <- [M.lookup (name, rKey r) runSteps] ]
+    runFor (_, b, sn, _, _, _, drvName, _, _, _) =
+      maybe (M.lookup drvName runByName >>= listToMaybe) Just (M.lookup (b, sn) runByStep)
+    stepSlot st@(_, b, sn, proj, js, job, drvName, drvPath, sys, started) =
+      let r = runFor st
       in SlotNow
         { slDrvName = drvName, slDrvPath = Just drvPath
         , slKind = runKindText . rKind <$> r, slSystem = sys
@@ -218,6 +230,7 @@ machineNow agents qrByName isOrphan isUploading prefetched stepsByMachine name =
         , slPrefetched = S.member (b, sn) prefetched
         , slUploading = isUploading name drvPath }
     stepNames = S.fromList [ d | (_, _, _, _, _, _, d, _, _, _) <- hydraSteps ]
+    stepRunKeys = S.fromList [ rKey r | st <- hydraSteps, Just r <- [runFor st] ]
     -- Builds the agent sees that hydra did not schedule here (IFD for an
     -- evaluation, or steps hydra has not yet recorded).
     extraSlots =
@@ -229,7 +242,7 @@ machineNow agents qrByName isOrphan isUploading prefetched stepsByMachine name =
           , slRss = Just (rFootprint r)
           , slNetRxRate = Just (fromIntegral (rNetRxBytes r) * 1000 / fromIntegral (max 1 interval))
           , slCpuSeconds = Nothing, slOrphaned = False, slPrefetched = False, slUploading = False }
-      | r <- runs, rKind r /= Evaluation, not (rName r `S.member` stepNames) ]
+      | r <- buildRuns, not (rName r `S.member` stepNames), not (rKey r `S.member` stepRunKeys) ]
     -- Steps using no slot last: prefetched ones are queued behind the
     -- machine's slots, uploading ones are already built.
     slots = sortOn (\s -> (slPrefetched s, slUploading s)) (map stepSlot hydraSteps ++ extraSlots)
