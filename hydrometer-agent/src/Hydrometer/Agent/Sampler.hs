@@ -179,7 +179,17 @@ identifyRoot pl r k = do
           Right (Right j) -> identifyFromBuildJson j
           _ -> Nothing
       [] -> pure Nothing
-    (_, Just a) -> pure (identifyFromEnv (paEnv a))
+    (_, Just a) -> case identifyFromEnv (paEnv a) of
+      Just i -> pure (Just i)
+      -- A structured-attrs derivation: its name and outputs are in the
+      -- attrs file, not the environment.
+      Nothing -> case lookup "NIX_ATTRS_JSON_FILE" (paEnv a) of
+        Just f -> do
+          v <- try (A.eitherDecodeFileStrict (T.unpack f)) :: IO (Either SomeException (Either String A.Value))
+          pure $ case v of
+            Right (Right j) -> identifyFromAttrsJson k j
+            _ -> Nothing
+        Nothing -> pure Nothing
     (_, Nothing) -> pure Nothing
 
 hostDelta :: Int64 -> HostRaw -> HostRaw -> HostStats
