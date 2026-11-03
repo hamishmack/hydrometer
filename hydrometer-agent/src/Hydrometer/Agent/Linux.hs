@@ -116,6 +116,7 @@ readHost storePath = do
     , hrMaxFiles = case fileNr of [_, _, m] -> Just m; _ -> Nothing
     , hrFreeVnodes = Nothing
     , hrMaxVnodes = Nothing
+    , hrDeadVnodes = Nothing
     , hrStoreFree = fst <$> space
     , hrStoreTotal = snd <$> space
     }

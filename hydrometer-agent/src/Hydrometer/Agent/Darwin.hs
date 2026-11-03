@@ -49,9 +49,9 @@ readHost storePath = do
   mem <- allocaArray 9 $ \p -> do
     _ <- c_host_mem p
     peekArray 9 p
-  misc <- allocaArray 5 $ \p -> do
+  misc <- allocaArray 6 $ \p -> do
     _ <- c_host_misc p
-    peekArray 5 p
+    peekArray 6 p
   (rx, tx) <- readNet
   (dr, dw) <- allocaArray 2 $ \p -> do
     _ <- c_disk_io p
@@ -66,7 +66,7 @@ readHost storePath = do
               else pure (0, 0, 0)
   memTotal <- sysctlInt64 "hw.memsize"
   let [used, compressed, _free, pageouts, swapouts, _page, swapUsed, swapTotal, level] = mem
-      [numFiles, maxFiles, _boot, freeVnodes, maxVnodes] = misc
+      [numFiles, maxFiles, _boot, freeVnodes, maxVnodes, deadVnodes] = misc
   pure HostRaw
     { hrCpuUserMs = fromIntegral (u + nice)
     , hrCpuSystemMs = fromIntegral s
@@ -89,6 +89,7 @@ readHost storePath = do
     , hrMaxFiles = if maxFiles < 0 then Nothing else Just maxFiles
     , hrFreeVnodes = if freeVnodes < 0 then Nothing else Just freeVnodes
     , hrMaxVnodes = if maxVnodes < 0 then Nothing else Just maxVnodes
+    , hrDeadVnodes = if deadVnodes < 0 then Nothing else Just deadVnodes
     , hrStoreFree = fst <$> space
     , hrStoreTotal = snd <$> space
     }
@@ -118,7 +119,7 @@ readNet = do
       pure (fromIntegral (sum (map fst phys)), fromIntegral (sum (map snd phys)))
 
 readBootTimeMs :: IO Int64
-readBootTimeMs = allocaArray 5 $ \p -> do
+readBootTimeMs = allocaArray 6 $ \p -> do
   _ <- c_host_misc p
   peekElemOff p 2
 

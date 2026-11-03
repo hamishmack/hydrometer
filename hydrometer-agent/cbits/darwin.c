@@ -91,7 +91,7 @@ int hm_host_mem(int64_t *out)
 }
 
 /* out: kern.num_files, kern.maxfiles, boot time (ms since epoch),
- * kern.free_vnodes, kern.maxvnodes. */
+ * kern.free_vnodes, kern.maxvnodes, vfs.vnstats.num_dead_vnodes. */
 int hm_host_misc(int64_t *out)
 {
     int v = 0;
@@ -104,14 +104,21 @@ int hm_host_misc(int64_t *out)
     int mib[2] = { CTL_KERN, KERN_BOOTTIME };
     out[2] = sysctl(mib, 2, &bt, &len, NULL, 0) == 0
            ? (int64_t)bt.tv_sec * 1000 + bt.tv_usec / 1000 : 0;
-    /* Every open file needs a vnode.  When none is free, opening a file
-     * fails with ENFILE ("Too many open files in system") whatever
-     * kern.maxfiles is.  Linux VMs' VirtioFS shares hold one per inode the
-     * guest has cached. */
+    /* Every open file needs a vnode, and when the kernel can find none to
+     * reuse, opening a file fails with ENFILE ("Too many open files in
+     * system") whatever kern.maxfiles is.  macOS never shrinks its vnode
+     * table, so kern.num_vnodes soon reaches kern.maxvnodes and
+     * kern.free_vnodes stays low; but most of the table is dead vnodes,
+     * which the kernel reuses before anything else and kern.free_vnodes
+     * does not count.  Free plus dead is what is available. */
     len = sizeof(v);
     out[3] = sysctlbyname("kern.free_vnodes", &v, &len, NULL, 0) == 0 ? v : -1;
     len = sizeof(v);
     out[4] = sysctlbyname("kern.maxvnodes", &v, &len, NULL, 0) == 0 ? v : -1;
+    /* A vnstats counter; read into 64 bits whatever its width. */
+    int64_t dead = 0;
+    len = sizeof(dead);
+    out[5] = sysctlbyname("vfs.vnstats.num_dead_vnodes", &dead, &len, NULL, 0) == 0 ? dead : -1;
     return 0;
 }
 
